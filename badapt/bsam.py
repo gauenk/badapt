@@ -350,8 +350,6 @@ class FourierCoordEncoder(nn.Module):
         return th.cat(parts, dim=-1)
 
 
-
-
 @th.no_grad()
 def run_sam(sam,image,mask):
 

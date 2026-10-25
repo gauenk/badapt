@@ -3,7 +3,7 @@ import math
 import torch as th
 import torch.nn.functional as F
 
-from badapt.ba_triton import get_boundary
+from badapt.ba_triton import get_boundary,check_is_changeable,log_potts_ratio,remove_artifacts
 
 # Algorithm 1
 @th.no_grad()
@@ -62,6 +62,9 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             # log[p(z_i=1|...)/p(z_i=0|...)] \approx BSAM(...) + log-Potts-ratio(...)
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
+            if scale == 1:
+                remove_artifacts(refined)
+
     # -- ensure native-resolution --
     refined = interp(refined,H,W)
     
@@ -84,23 +87,63 @@ def ba_step(logits, mask, boundary, potts_coeff):
         if th.sum(sel_i) == 0: continue
 
         bcoords_i = bcoords[sel_i]
-        # is_chng = sclr.sclr_cuda.check_is_changable(mask, bcoords_i.contiguous(), 1)[0].bool()
-        is_chng = th.ones_like(bcoords_i[:,0]).bool()
+        is_chng = check_is_changeable(mask, bcoords_i.contiguous())
+        is_chng = th.ones_like(is_chng)
         bcoords_i = bcoords_i[is_chng]
         logits_i = logits[sel_i][is_chng]
 
         # Optional Potts Term
         if potts_coeff > 0:
-            potts = sclr.sclr_cuda.count_neq(mask,bcoords_i.int().contiguous(),1)
-            logits_i = logits_i - potts_coeff*(potts[:,1] - potts[:,0])
+            lpotts = log_potts_ratio(mask,bcoords_i.int().contiguous())
+            logits_i = logits_i - potts_coeff*lpotts
 
         # Compute new labels
         mask[bcoords_i[:, 0], bcoords_i[:, 1]] = (logits_i > 0.0).int()
 
     return mask
 
+def oracle_boundary_adaptation(gt,image,coarse,potts_coeff=0.0,steps=None,scales=None):
 
-def oracle_ba_step():
-    pass
+    # -- prepare --
+    if steps is None: steps = [12,9,3]
+    if scales is None: scales = [4,2,1]
+    def interp(mask,_H,_W,mode='nearest',thresh=True):
+        kw = {"align_corners":False} if mode == 'bilinear' else {}
+        mask = F.interpolate(mask.float()[None,None], size=(_H,_W), mode=mode, **kw)[0,0]
+        if thresh: return (mask > 0.5).int()
+        else: return mask
+    device = image.device
+    H, W, C = image.shape
+
+    # -- run refinement loop --
+    refined = coarse.clone()
+    for scale, nsteps in zip(scales, steps):
+
+        H_s, W_s = H // scale, W // scale
+        coarse_s = interp(coarse,H_s,W_s,'bilinear')
+        refined = interp(refined,H_s,W_s,'bilinear')
+        gt_s = interp(gt,H_s,W_s,'bilinear')
+
+        for step in range(nsteps):
+
+            # get boundary points
+            bndy = get_boundary(refined)
+            query  = scale*th.stack(th.where(bndy)).T+(scale-1)/2.0
+            if query.shape[0] == 0: continue
+
+            # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
+            logits = th.logit(gt_s[bndy].clamp(0.01,0.99))
+
+            # log[p(z_i=1|...)/p(z_i=0|...)] \approx BSAM(...) + log-Potts-ratio(...)
+            refined = ba_step(logits,refined,bndy,potts_coeff)
+
+            if scale == 1:
+                remove_artifacts(refined)
+
+    # -- ensure native-resolution --
+    refined = interp(refined,H,W)
+    
+    return refined
+
 
 
