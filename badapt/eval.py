@@ -18,7 +18,7 @@ import pycocotools.mask as mask_utils
 
 from pathlib import Path
 from collections import defaultdict
-
+from scipy.ndimage import label as scipy_label
 
 
 def eval_refiner(rname,dname,potts,steps,scales):
@@ -91,8 +91,15 @@ def eval_refiner(rname,dname,potts,steps,scales):
         biou_coarse = float(compute_iou(coarse_b, gt_b))
         biou_refined = float(compute_iou(refined_b, gt_b))
 
+        # -=-=-=-=- Connected Comps -=-=-=-=-
+        cc_gt = ndi_label(gt.cpu())[1]
+        cc_coarse = ndi_label(coarse.cpu())[1]
+        cc_refined = ndi_label(refined.cpu())[1]
+
         # -=-=-=- summary -=-=-=-=-
-        print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f]" % (img_id,miou_coarse,miou_refined,biou_coarse,biou_refined))
+        print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f] CC: [%d,%d,%d]" % (img_id,miou_coarse,miou_refined,
+                                                                                 biou_coarse,biou_refined,
+                                                                                 cc_gt,cc_coarse,cc_refined))
 
         # -- record --
         record['mIoU-C'].append(miou_coarse)
@@ -131,6 +138,11 @@ def compute_iou(pred, anno):
     iou = (intersection / union)*100 if any_b>0 else -1.0
 
     return iou
+
+def ndi_label(mask):
+    s = np.array([[0,1,0],[1,1,1],[0,1,0]])
+    labeled_array, num_features = scipy_label(mask, structure=s)
+    return labeled_array, num_features
 
 def mask_to_boundary(mask, dilation_ratio=0.02):
     """

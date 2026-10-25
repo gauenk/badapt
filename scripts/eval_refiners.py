@@ -35,9 +35,9 @@ def main():
             res = read_cache(cache_root,rname,dname)
             if res is None:
                 if rname == 'bsam':
-                    # res = eval_refiner(rname,dname,0.00,[12,9,3],[4,2,1])
+                    res = eval_refiner(rname,dname,0.00,[12,9,3],[4,2,1])
                     # res = eval_refiner(rname,dname,0.00,[10,],[1,])
-                    res = eval_refiner(rname,dname,0.00,[3,2,],[2,1,])
+                    # res = eval_refiner(rname,dname,0.00,[10,],[1,])
                 elif rname in ['hqsam-refiner','sam-refiner']:
                     res = eval_refiner(rname,dname)
                 write_cache(res,cache_root,rname,dname)

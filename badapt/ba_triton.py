@@ -309,19 +309,21 @@ def check_is_changeable(
     H, W = labels.shape
     BND = bcoords.shape[0]
 
+
     ischng = torch.empty(
         (BND,),
         dtype=torch.bool,
         device=labels.device,
     )
 
+    if BND == 0: return ischng
+
+
     lut = torch.tensor(
         BASS_LUT_VALUES,
         dtype=torch.int32,
         device=labels.device,
     )
-
-    if BND == 0: return ischng
 
     block_size = 128
 

@@ -63,7 +63,9 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
             if scale == 1:
-                remove_artifacts(refined)
+                from sclr.isr_boundary import remove_strands
+                remove_strands(refined[None,:].int(),rm_strands=True,rm_islands=True)
+                # remove_artifacts(refined)
 
     # -- ensure native-resolution --
     refined = interp(refined,H,W)
@@ -85,10 +87,19 @@ def ba_step(logits, mask, boundary, potts_coeff):
         # -- select color & skip empty --
         sel_i = color == i
         if th.sum(sel_i) == 0: continue
-
         bcoords_i = bcoords[sel_i]
-        is_chng = check_is_changeable(mask, bcoords_i.contiguous())
-        is_chng = th.ones_like(is_chng)
+
+        import sclr
+        _is_chng = check_is_changeable(mask, bcoords_i.contiguous())
+        _bc = th.cat([th.zeros_like(bcoords_i[:,[0]]),bcoords_i],dim=-1).contiguous()
+        is_chng = sclr.sclr_cuda.check_is_changable(mask[None,:], _bc, 1)[0].bool()
+        print(_is_chng,is_chng)
+        exit()
+
+        # print("delta: ",th.mean(th.abs((is_chng.int() - _is_chng.int())*1.0)),_is_chng.sum(),is_chng.sum())
+        # norig = is_chng.sum().item()
+        # is_chng = th.ones_like(is_chng)
+        # print("NoChg: ",norig,is_chng.sum().item())
         bcoords_i = bcoords_i[is_chng]
         logits_i = logits[sel_i][is_chng]
 
