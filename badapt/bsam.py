@@ -8,170 +8,432 @@
 
 import torch as th
 from torch import nn
+from einops import rearrange
+import torch.nn.functional as F
+
+from segment_anything import sam_model_registry
+from segment_anything.modeling.common import LayerNorm2d
+from badapt.sam.image_encoder import init_image_encoder
+from badapt.sam.mask_decoder_hq import init_mask_decoder
+from badapt.ba import boundary_adaptation
 
 class BSAM(nn.Module):
 
-    def __init__(self):
+    def __init__(self,checkpoint_fname,samhq=True):
         super().__init__()
-        self.sam = sam
 
+        # -- sam base --
+        ckpt_fname = "checkpoints/sam_vit_h_4b8939.pth"
+        self.sam = {"sam": sam_model_registry["vit_h"](checkpoint=ckpt_fname)}
+        self.sam['sam'].image_encoder = init_image_encoder("checkpoints/sam_hq_vit_h.pth")
+        self.sam['sam'].mask_decoder = init_mask_decoder("checkpoints/sam_hq_vit_h.pth")
 
-    def forward_at_scale(self, image, coarse, refined, boundary,
-                         ms_scale, sem_enc, ftrs0_base=None):
+        # -- low-level feature extraction --
+        self.stride0 = 8
+        s0 = self.stride0
+        Fll = 512
+        self.iftr_net = nn.Sequential(
+            nn.ConvTranspose2d(1280, Fll, kernel_size=2, stride=2),
+            LayerNorm2d(Fll),
+            nn.GELU(),
+            nn.ConvTranspose2d(Fll, Fll, kernel_size=2, stride=2),
+            LayerNorm2d(Fll),
+            nn.GELU(),
+        )
+        self.proj_mask_cur  = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=(16, 16), stride=(s0, s0), padding=0),
+            LayerNorm2d(32), nn.GELU(),
+        )
+        self.proj_mask_prev = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=(16, 16), stride=(s0, s0), padding=0),
+            LayerNorm2d(32), nn.GELU(),
+        )
+        self.mask_mix = nn.Sequential(
+            nn.Conv2d(32 + 32, 64, kernel_size=1, padding=0),
+            LayerNorm2d(64), nn.GELU(),
+        )
+
+        # -- FilM Parameters --
+        self.scales   = [4, 2, 1]
+        self.ll_scale_gamma = nn.ParameterList([nn.Parameter(th.zeros(Fll)) for _ in self.scales])
+        self.ll_scale_beta  = nn.ParameterList([nn.Parameter(th.zeros(Fll)) for _ in self.scales])
+        self.mask_scale_gamma = nn.ParameterList([nn.Parameter(th.zeros(64)) for _ in self.scales])
+        self.mask_scale_beta  = nn.ParameterList([nn.Parameter(th.zeros(64)) for _ in self.scales])
+
+        # -- coordinate encoder --
+        #self.coord_encoder
+        self.pos_encoder = FourierCoordEncoder(num_freqs=8, max_freq_log2=8)
+        pos_dim = self.pos_encoder.out_dim
+
+        # -- imnet --
+        self.imnet = PointwiseNet(64 + pos_dim,Fll + pos_dim,32  + pos_dim,256,hyper_dim=32)
+        self.reset()
+
+        # -- load bsam checkpoint --
+        translate = {"NarrativeImNet":"PointwiseNet","ftrs0_proj":"iftr_net","FourierCoordEncoder_v2":"FourierCoordEncoder"}
+        state = th.load(checkpoint_fname)['model_state']
+        self.load_state_dict(state,strict=False)
+        
+    def reset(self):
+        self.gridI    = None
+        self.gridS    = None
+        self.gridM    = None
+
+    @th.no_grad()
+    def get_global_features(self, image, mask):
+        iftrs_raw,sftrs,context = self.get_sam_features(image,mask)
+        iftrs = self.iftr_net(iftrs_raw)
+        return iftrs,sftrs,context
+
+    @th.no_grad()
+    def get_sam_features(self, image, mask):
         """
-        Single forward pass at one scale/step of the multiscale loop.
-
-        image      : (1, H, W, C)  native resolution
-        coarse : (1, H_s, W_s) mask at scaled resolution (H_s = H//ms_scale)
-        refined : (1, H_s, W_s) previous step's mask at scaled resolution
-                    (pass coarse on the very first step)
-        boundary  : (1, H_s, W_s) boundary mask at scaled resolution
-        ms_scale  : int            current scale factor
-        sem_enc   : dict           output of sem_encode()
-
-        Returns logits at boundary points, shape (N,).
+        Run everything that is scale-independent once and cache it.
+        mask : (H, W) — initial (coarse) mask at native resolution.
+        Call reset_cache() before processing a new image.
         """
+        with th.no_grad():
+            iftrs_raw,sftrs,context = run_sam(self.sam['sam'], image, mask)
+        return iftrs_raw,sftrs,context
 
-        # -- unpack --
-        B, H, W, C = image.shape
-        assert B == 1
-        device = coarse.device
+    def _get_grids(self, HW, iHW, sHW, mHW, device):
+        if self.gridI is None:
+            scale = 1024 / max(HW)
+            self.gridI = make_grid(iHW, scale, 1024/iHW[0], device=device)
+            self.gridS = make_grid(sHW, scale, 1024/sHW[0], device=device)
+            self.gridM = make_grid(mHW, 1,     self.stride0,device=device)
+        return self.gridI, self.gridS, self.gridM
 
-        # -- unpack --
-        encoded       = sem_enc["encoded"]
-        early_encoded = sem_enc["early_encoded"]
-        sam_image      = sem_enc["sam_image"]
-        ftrs1 = sem_enc["ftrs1"]
-        hyper = sem_enc["hyper"]
+    def forward(self, query, fI, fS, fM, context, HW):
 
-        # ── scale-conditioned low-level features ──────────────────────────
-        if ftrs0_base is None:
-            ftrs0_base = self.get_ftrs0_base(early_encoded)
-        ftrs0 = self.get_ll_ftrs_ms(ftrs0_base, ms_scale)
-        mftrs = self.get_mask_ftrs_ms(coarse, refined, ms_scale, H, W)
+        def read_points(ftrs,fgrids,scale,stride):
+            fH, fW = ftrs.shape[-2:]
+            row = ((query[:, 0]*scale) / stride).long().clamp(0, fH - 1) # native-res to ftr-res index
+            col = ((query[:, 1]*scale) / stride).long().clamp(0, fW - 1)
+            pos     = fgrids[row, col] # full grid @ ftr-res to (N,2) with values @ nativ-res
+            rel_pos = query - pos # offset in native-res
+            pos_enc = self.pos_encoder(rel_pos)   # (N, grid_ndim)
+            pos_feat  = ftrs[0, :, row, col].T  # (N, Fll)
+            inp = th.cat([pos_feat, pos_enc], dim=-1)   # (N, Fll+grid_ndim)
+            return inp
 
-        # ── coordinate grids (cached in native-pixel space) ───────────────
-        fH0, fW0 = ftrs0.shape[-2:]
-        fH1, fW1 = ftrs1.shape[-2:]
-        mH,  mW  = mftrs.shape[-2:]
-        ftrs0_coord, ftrs1_coord, mftrs_coord = self._get_coords(H, W, fH0, fW0, fH1, fW1, mH, mW, device)
+        # -- gridinate grids (cached in native-pixel space) --
+        device = fI.device
+        iHW,sHW,mHW = fI.shape[-2:],fS.shape[-2:],fM.shape[-2:]
+        gI, gS, gM = self._get_grids(HW, iHW, sHW, mHW, device)
+        
+        # -- prepare reading --
+        scale = 1024 / max(HW)
+        sM = self.stride0
+        sI = 1024 / iHW[0]
+        sS = 1024 / sHW[0]
 
-        # ── boundary coords in native pixel space ─────────────────────────
-        # make_coord_scaled gives native-pixel centers for each scaled pixel
-        if boundary.shape[-1] == 2:
-            coord = boundary # since its actually points here
-        else:
-            coord_grid = make_coord_scaled(H, W, ms_scale, device=device)  # (H_s, W_s, 2)
-            coord = coord_grid[boundary[0] > 0]                             # (N, 2)
+        # -- read pointwise info --
+        qM = read_points(fM,gM,1,sM) # mask
+        qI = read_points(fI,gI,scale,sI) # image
+        qS = read_points(fS,gS,scale,sS) # semantic
 
-        # ── decode logits ─────────────────────────────────────────────────
-        logits = self.logit_decoder(
-            ftrs0, ftrs0_coord, ftrs1, ftrs1_coord, mftrs, mftrs_coord, hyper, coord, H, W)
-
-        return logits   # (N,)  — caller places these back into a (H_s, W_s) map
-
-    # ── logit decoder (native-pixel coord space) ──────────────────────────────
-    def logit_decoder(self, feat0, feat0_coord, feat1, feat1_coord,
-                      featM, featM_coord, hyper, coord, H, W):
-        """
-        coord : (N, 2) in *native* pixel space.
-        feat0 : (1, Fll, fH0, fW0)  low-level features
-        feat1 : (1, C1,  fH1, fW1)  SAM decoded features
-        All feature grids live in native pixel space; no ms_scale needed here.
-        """
-        coord_encoder = self.coord_encoder
-
-        # ── mftrs lookup ─────────────────────────────────────────────────────
-        mH, mW = featM.shape[-2:]
-        rowM = (coord[:, 0] / self.stride0).long().clamp(0, mH - 1)
-        colM = (coord[:, 1] / self.stride0).long().clamp(0, mW - 1)
-        posM     = featM_coord[rowM, colM]       # (N, 2) native-pixel patch centers
-        rel_posM = coord - posM                  # (N, 2) native-pixel offset
-        rel_encM = coord_encoder(rel_posM)       # (N, coord_ndim)
-        qM_feat  = featM[0, :, rowM, colM].T     # (N, Fll)
-
-        # ── ftrs0 lookup ─────────────────────────────────────────────────────
-        fH0, fW0 = feat0.shape[-2:]
-        sam_scale = 1024 / max(H, W)
-        s0        = 1024 / fH0
-        row0 = ((coord[:, 0] * sam_scale) / s0).long().clamp(0, fH0 - 1)
-        col0 = ((coord[:, 1] * sam_scale) / s0).long().clamp(0, fW0 - 1)
-        pos0     = feat0_coord[row0, col0]       # (N, 2) native-pixel feat centers
-        rel_pos0 = coord - pos0                  # (N, 2)
-        rel_enc0 = coord_encoder(rel_pos0)       # (N, coord_ndim)
-        q0_feat  = feat0[0, :, row0, col0].T     # (N, C1)
-
-        # ── ftrs1 lookup ─────────────────────────────────────────────────────
-        fH1, fW1 = feat1.shape[-2:]
-        sam_scale = 1024 / max(H, W)
-        s1        = 1024 / fH1
-        row1 = ((coord[:, 0] * sam_scale) / s1).long().clamp(0, fH1 - 1)
-        col1 = ((coord[:, 1] * sam_scale) / s1).long().clamp(0, fW1 - 1)
-        pos1     = feat1_coord[row1, col1]       # (N, 2) native-pixel feat centers
-        rel_pos1 = coord - pos1                  # (N, 2)
-        rel_enc1 = coord_encoder(rel_pos1)       # (N, coord_ndim)
-        q1_feat  = feat1[0, :, row1, col1].T     # (N, C1)
-
-        # ── imnet ────────────────────────────────────────────────────────────
-        inp0 = torch.cat([q0_feat, rel_enc0], dim=-1)   # (N, Fll+coord_ndim)
-        inp1 = torch.cat([q1_feat, rel_enc1], dim=-1)   # (N, C1+coord_ndim)
-        inpM = torch.cat([qM_feat, rel_encM], dim=-1)   # (N, Fll+coord_ndim)
-
-        logits = self.imnet(inp0, inp1, inpM, hyper.view(1, -1))  # (N,)
+        # -- decode --
+        logits = self.imnet(qI, qS, qM, context.view(1, -1))  # (N,)
         return logits
 
-    def refine(self,image,coarse):
-        get_boundary(coarse)
-        pass
+    def _get_patchify_padding(self, imgs):
+        stride = self.stride0
+        H, W = imgs.shape[-2:]
+        pad_h = (stride - H % stride) % stride
+        pad_w = (stride - W % stride) % stride
+        if pad_h > 0 or pad_w > 0:
+            imgs = F.pad(imgs, (0, pad_w, 0, pad_h))
+        return imgs, (pad_h, pad_w)
 
-    def forward(image,coarse,i):
-        logits = 0
-        return logit
+
+    def mftr_net(self, coarse, refined, scale, HW):
+        def encode_mask(mask_s, proj):
+            # nearest upsample to native res — block size = scale pixels
+            mask_native = F.interpolate(
+                mask_s[None, None].float(), size=HW, mode='nearest'
+            ).squeeze(1)  # (1, H, W)
+            mask_pad, _ = self._get_patchify_padding(mask_native[:, None].float())
+            return proj(mask_pad)  # (1, 32, fH0, fW0)
+    
+        # -- encode and mix --
+        mask_cur_ftrs  = encode_mask(coarse,  self.proj_mask_cur)
+        refined_ftrs = encode_mask(refined,  self.proj_mask_prev)
+        mftrs = self.mask_mix(
+            th.cat([mask_cur_ftrs, refined_ftrs], dim=1)
+        )
+
+        # -- scale FiLM --
+        scale_idx = self.scales.index(scale)
+        gamma = self.mask_scale_gamma[scale_idx]
+        beta  = self.mask_scale_beta[scale_idx]
+        mftrs = (1 + gamma)[None, :, None, None] * mftrs \
+            +   beta  [None, :, None, None]
+        return mftrs  # (1, Fll, fH0, fW0)
+
+    def iftr_net_ms(self, iftrs, scale):
+        """
+        Mix cached native-res ftrs0_base with mask_cur and curr_mask,
+        then apply scale FiLM so imnet knows the current multiscale context.
+
+        ftrs0_base : (1, Fll, fH0, fW0)  — native-res, cached
+        obj_masks  : (1, H_s, W_s)       — mask at scaled resolution
+        curr_mask  : (1, H_s, W_s)       — previous step mask (same scale)
+        ms_scale   : int                  — e.g. 16, 8, 4, 2, 1
+        """
+
+        # -- scale FiLM --
+        scale_idx = self.scales.index(scale)
+        gamma = self.ll_scale_gamma[scale_idx]
+        beta  = self.ll_scale_beta[scale_idx]
+        iftrs = (1 + gamma)[None, :, None, None] * iftrs \
+            +      beta  [None, :, None, None]
+        return iftrs  # (1, Fll, fH0, fW0)
 
     def ba(self,image,coarse,potts_coeff=0.0,steps=None,scales=None):
         return boundary_adaptation(self,image,coarse,potts_coeff,steps,scales)
 
 
-# Algorithm 1
-def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None):
+def make_grid(shape, scale, s, device=None):
+    fH, fW = shape
+    # orig_H, orig_W = orig
+    # scale = 1024 / max(orig_H, orig_W)
+    # s = 1024 / fH  # stride in resized space (16 or 4)
+    row_seq = (th.arange(fH, device=device).float() * s + (s - 1) / 2.0) / scale
+    col_seq = (th.arange(fW, device=device).float() * s + (s - 1) / 2.0) / scale
+    ret = th.stack(th.meshgrid(row_seq, col_seq, indexing='ij'), dim=-1)
+    return ret  # [fH, fW, 2], values in native pixel space
 
-    if steps is None: steps = [12,9,3]
-    if scales is None: scales = [4,2,1]
-    def interp(mask,_H,_W,mode='nearest'):
-        mask = F.interpolate(mask.float()[:,None], size=(_H,_W), mode=mode).squeeze(1)
-        return (mask > 0.5).int()
-    def unwrap(bsam):
-        return bsam.module if hasattr(bsam, 'module') else bsam
+class PointwiseNet(nn.Module):
 
-    H, W, C = image.shape
-    bsam = bsam.eval()
-    if hasattr(bsam,'reset'): bsam.reset()
-    else: bsam.module.reset()
+    def __init__(self, m_dim, in0_dim, in1_dim, hidden, hyper_dim):
+        super().__init__()
 
-    bsam = unwrap(bsam)
-    iftrs,sftrs = bsam.get_global_features(image,coarse)
-    refined = coarse.clone()
+        # --- per-scale encoders (static weights) ---
+        self.encM = nn.Sequential(nn.Linear(m_dim, hidden), nn.ReLU(),
+                                  nn.Linear(hidden, hidden), nn.ReLU())
+        self.enc0 = nn.Sequential(nn.Linear(in0_dim, hidden), nn.ReLU(),
+                                  nn.Linear(hidden, hidden), nn.ReLU())
+        self.enc1 = nn.Sequential(nn.Linear(in1_dim, hidden), nn.ReLU(),
+                                  nn.Linear(hidden, hidden), nn.ReLU())
+        self.hyper_proj = nn.Sequential(nn.Linear(hyper_dim, hidden), nn.ReLU())
+        self.dec_proj = nn.Sequential(nn.Linear(hyper_dim, hidden), nn.ReLU())
+        hyper_dim = hidden
 
-    for scale, nsteps in zip(scales, steps):
-        H_s, W_s = H // scale, W // scale
+        # --- per-scale FiLM conditioning ---
+        self.film0 = FiLMLayer(hidden, hyper_dim)
+        self.film1 = FiLMLayer(hidden, hyper_dim)
 
-        coarse_s = interp(coarse,H_s,W_s,'bilinear')
-        refined = interp(refined,H_s,W_s,'bilinear')
+        # --- hyper-gated scale fusion ---
+        self.scale_gate = nn.Sequential(
+            nn.Linear(hyper_dim, hidden),
+            nn.Sigmoid()
+        )
 
-        for step in range(nsteps):
+        # --- post-fusion refinement ---
+        self.fuse = FusionBlock(hidden)
+        self.fused_for_dec = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU())
+        self.dec_film = FiLMLayer(hyper_dim, hidden)
+        self.fused_for_hyper = nn.Sequential(nn.Linear(hidden, hidden), nn.ReLU())
+        self.hyper_film = FiLMLayer(hyper_dim, hidden)
 
-            # get boundary
-            boundary = get_boundary(refined)
-            if th.sum(boundary) == 0: continue
+        self._init_weights()
 
-            # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
-            logits = bsam(image, coarse_s, refined, boundary, scale=scale, iftrs=iftrs, sftrs=sftrs)
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
-            # log[p(z_i=1|...)/p(z_i=0|...)] \approx BSAM(...) + log-Potts-ratio(...)
-            refined = ba_update(logits,refined,boundary,potts_coeff)
+    def forward(self, inp0, inp1, inpM, context):
+        print(inp1.shape,context.shape)
+        return th.sum(inp1[:,:32]*context,dim=-1)
 
-    # -- ensure native-resolution --
-    refined = interp(refined,H,W)
-    
-    return refined
+        # lift features to latent space
+        q = inp0.shape[0]
+        context = self.hyper_proj(context)
+        f0 = self.enc0(inp0) + self.encM(inpM)
+        f0 = self.film0(f0, context)   # [bs, q, hidden]
+        f1 = self.film1(self.enc1(inp1), context)   # [bs, q, hidden]
 
+        # fusion of semantic and low-level features
+        g = self.scale_gate(context).unsqueeze(1)   # [bs, 1, hidden]
+        fused = g * f0 + (1 - g) * f1            # [bs, q, hidden]
+        print(inp0.shape,inp1.shape,inpM.shape,context.shape,fused.shape)
+        # print(fused.shape,q)
+        fused = fused.view(q,-1)
+        fused = self.fuse(fused)
+
+        # modulate sam-based pair with fused features
+        dec = self.dec_proj(inp1[:,:32])
+        dec_mod = self.dec_film(dec,self.fused_for_dec(fused))
+        context_mod = self.hyper_film(context,self.fused_for_hyper(fused))
+        logits = th.sum(dec_mod * context_mod,dim=-1) / (context_mod.shape[-1] ** 0.5)
+
+        return logits
+
+
+class FusionBlock(nn.Module):
+    def __init__(self, hidden):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(hidden, hidden),
+        )
+        self.act = nn.ReLU()
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        return self.act(x + self.net(x))  # residual: preserve gated fusion signal
+
+
+class FiLMLayer(nn.Module):
+    def __init__(self, hidden_dim, hyper_dim):
+        super().__init__()
+        self.to_gamma_beta = nn.Linear(hyper_dim, hidden_dim * 2)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        nn.init.zeros_(self.to_gamma_beta.weight)
+        nn.init.zeros_(self.to_gamma_beta.bias)
+
+    def forward(self, x, hyper):
+        # hyper: [bs, hyper_dim] → unsqueeze to broadcast over q
+        gb = self.to_gamma_beta(hyper)       # [bs, 1, hidden*2]
+        gamma, beta = gb.chunk(2, dim=-1)                 # [bs, 1, hidden] each
+        return (1 + gamma) * x + beta                     # broadcasts over q
+
+class FourierCoordEncoder(nn.Module):
+    def __init__(self, num_freqs=8, max_freq_log2=3, include_input=True):
+        super().__init__()
+        self.include_input = include_input
+        self.num_freqs = num_freqs
+        freqs = 2.0 ** th.linspace(0, max_freq_log2, num_freqs)
+        self.register_buffer('freqs', freqs)
+
+    @property
+    def out_dim(self):
+        base = 2 * self.num_freqs * 2
+        if self.include_input:
+            base += 2
+        return base
+
+    def forward(self, rel_pos):
+        """
+        rel_pos: [..., 2]  normalized offset in [-1, 1] within the feature cell
+        returns: [..., out_dim]
+        """
+        x_freq = rel_pos.unsqueeze(-1) * self.freqs   # [..., 2, num_freqs]
+        parts = [x_freq.sin().flatten(-2),
+                 x_freq.cos().flatten(-2)]
+        if self.include_input:
+            parts = [rel_pos] + parts
+        return th.cat(parts, dim=-1)
+
+
+
+
+@th.no_grad()
+def run_sam(sam,image,mask):
+
+    from badapt.sam.sam_refiner import sam_input_prepare
+    from segment_anything.utils.transforms import ResizeLongestSide
+
+    # -- setup image --
+    device = mask.device
+    H,W,C = image.shape
+    img_size = sam.image_encoder.img_size
+
+    # -- prepare image --
+    img_size = sam.image_encoder.img_size
+    resize = ResizeLongestSide(img_size)
+    image = resize.apply_image(image.cpu().numpy())
+    image = th.as_tensor(image, device=device)
+    image = image.permute(2, 0, 1).contiguous()
+
+    # -- run image encoder [slloow] --
+    input_images = sam.preprocess(image)[None,:]
+    enc,iftrs_raw = sam.image_encoder(input_images,return_early_ftrs=True)
+    enc = enc.detach()
+    iftrs_raw = iftrs_raw.detach()
+    iftrs_raw = rearrange(iftrs_raw,'1 h w c -> 1 c h w')
+
+    # -- get prompts --
+    # print(image.shape,mask.shape,enc.shape)
+    # print(image.max(),mask.max())
+    # exit()
+    image_record = sam_input_prepare(image, mask[None,:], enc[0], resize, gamma=4.0, strength=30)[0]
+
+    # -- run mask decoder --
+    points = None
+    if "point_coords" in image_record:
+        points = (image_record["point_coords"], image_record["point_labels"])
+    sparse_embeddings, dense_embeddings = sam.prompt_encoder(
+        points=points,boxes=image_record.get("boxes", None),
+        masks=image_record.get("mask_inputs", None),
+    )
+
+    # -- run mask decoder --
+    image_pe = sam.prompt_encoder.get_dense_pe()
+    fwd = sam.mask_decoder.forward_alt
+    sftrs,context = fwd(enc,image_pe,sparse_embeddings,dense_embeddings,
+                        multimask_output=False,hq_token_only=True,
+                        interm_embeddings=iftrs_raw,return_upscaled_hq=True)
+
+    return iftrs_raw,sftrs,context
+
+
+def vizualize_grid_index():
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import scipy
+
+    H = 20
+    W = 20
+
+    scale = 4 
+    bndy = th.tensor([(0,0),(1,1),(3,4),]).numpy()
+    query = scale*bndy+(scale-1)/2.0
+
+    res = 8
+    nH = res*H
+    nW = res*W
+    grid = th.stack(th.meshgrid(th.arange(nH),th.arange(nW),indexing='ij'),dim=-1).view(-1,2)
+    grid = grid.numpy()
+    img = np.zeros((nH,nW))
+    plt.imshow(img,'viridis')
+
+
+    # -- major points --
+    og_bool = np.logical_and(grid[:,0]%res == 0,grid[:,1]%res == 0)
+    major_grid = grid[og_bool]
+    print(major_grid[:3]/res)
+    _major_grid = grid[og_bool] + res//2
+    plt.scatter(_major_grid[:,0],major_grid[:,1],s=20)
+
+    # -- highlight nearest grid-point to query --
+    dist = scipy.spatial.distance.cdist(query,grid/(1.0*res))
+    inds = np.argmin(dist,axis=1)
+    iq = grid[inds]+res//2
+    plt.scatter(iq[:,0],iq[:,1],s=10)
+    plt.savefig("vizualize_grid_index.png")
+
+
+
+if __name__ == "__main__":
+    vizualize_grid_index()

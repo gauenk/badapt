@@ -64,7 +64,7 @@ def train_step(cfg,bsam,optim,data,log):
     if hasattr(bsam, 'reset'): bsam.reset()
     else: bsam.module.reset()
     with torch.no_grad():
-        iftrs,sftrs = bsam.get_global_features(image,coarse)
+        iftrs_raw,sftrs,context = bsam.get_sam_features(image,coarse)
 
     # -=-=- steps/scales -=-=-=-
     total_loss = 0.
@@ -79,23 +79,25 @@ def train_step(cfg,bsam,optim,data,log):
         for _ in range(nsteps):
 
             # get pixels along boundary
-            boundary,aux = get_training_boundary(refined,aux_points)
+            bndy,aux = get_training_boundary(refined,aux_points)
 
             # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
-            logits = bsam(image, coarse_s, refined, aux, scale=scale, iftrs=iftrs, sftrs=sftrs)
+            query  = scale*th.stack(th.where(aux)).view(-1,2)+(scale-1)/2.0
+            iftrs  = bsam.iftr_net_ms(bsam.iftr_net(iftrs_raw),scale)
+            mftrs  = bsam.mftr_net(coarse_s, refined, scale, (H,W) )
+            logits = bsam(aux, iftrs, sftrs, mftrs, context, (H,W) )
 
             # update
             with torch.no_grad():
-                refined = ba_step_tr(logits_B.detach(), boundary, refined, gt_s, scale, cfg.global_step, cfg.potts)
+                refined = ba_step_tr(logits_B.detach(),bndy,refined,gt_s,scale,cfg.global_step,cfg.potts)
 
             # loss function (Eq 2)
-            bndy = boundary>0
-            logits_B,logits_R = logits[bndy[aux>0]],logits[~bndy[aux>0]]
+            logits_B,logits_R = logits[bndy[aux]],logits[~bndy[aux]]
 
-            gt_B = gt_s[boundary > 0].float()
+            gt_B = gt_s[bndy].float()
             loss_B = weighted_focal_loss_with_logits(logits_B,gt_B)
 
-            gt_R = gt_s[(aux > 0) & ~(boundary>0)].float()
+            gt_R = gt_s[(aux) & ~(bndy)].float()
             loss_R = weighted_focal_loss_with_logits(logits_R,gt_R)
 
             lamb = 0.5
@@ -115,7 +117,7 @@ def train_step(cfg,bsam,optim,data,log):
             # loggin
             with torch.no_grad():
                 preds_BR      = (logits.detach() > 0).float()
-                gt_BR     = gt_s[aux > 0].float()
+                gt_BR     = gt_s[aux].float()
                 key = str(scale)
                 log[key]["loss"]  += loss.detach().item()
                 log[key]["corr"]  += (preds_BR == gt_BR).sum().item()
@@ -203,6 +205,7 @@ def get_training_boundary(mask,aux_points='thicc'):
 # ---------------------------------------
 
 
+@th.no_grad()
 def val_step(cfg, bsam, data, log):
 
     # -=-=- get (image, mask) pair -=-=-
@@ -213,30 +216,36 @@ def val_step(cfg, bsam, data, log):
     gt = (batch['label'][0].round() > 128.0).int()
     if gt.shape[0] == 0: return False
     assert(gt.shape[0] == 1)
+    H,W,C = image.shape
+    HW = (H,W)
  
     # -=-=- deform the mask -=-=-=-
     coarse = deform_mask(gt,cfg.deform_rsr,cfg.deform_sr,cfg.deform_iou)
 
     # -=-=- reset coorindate caches & extract frozen features -=-=-
     bsam.eval()
-    if hasattr(bsam, 'reset'): bsam.reset()
-    else: bsam.module.reset()
-    with torch.no_grad():
-        iftrs,sftrs = bsam.get_global_features(image,coarse)
+    bsam = unwrap(bsam)
+    bsam.reset()
+    iftrs,sftrs,context = bsam.get_global_features(image,coarse)
+    refined = coarse.clone()
 
     # -=-=- record baseline error -=-=-
-    d_iou = np.mean(compute_miou(coarse,  gt)[0])
+    d_iou = np.mean(compute_miou(coarse, gt)[0])
     update_val_log(log,d_iou=d_iou)
 
     # -=-=- inference -=-=-
     refined = coarse.clone()
     for scale, nsteps in zip(scales, steps):
 
+        # -- standard BA --
         H_s, W_s = H // scale, W // scale
         coarse_s = interp(coarse,H_s,W_s,'bilinear')
+        refined = interp(refined,H_s,W_s,'bilinear')
+        iftrs_s = bsam.iftr_net_ms(iftrs,scale)
+
+        # -- logging info --
         gt_s = interp(gt,H_s,W_s,'bilinear')
         gt_s_up = interp(gt_s,H,W)
-        refined = interp(refined,H_s,W_s,'bilinear')
         oracle = refined.clone() # reset upper-bound improvement every scale; just a logging choice
 
         for step in range(nsteps):
@@ -244,20 +253,21 @@ def val_step(cfg, bsam, data, log):
             # -=-=-=- inference -=-=-=-
 
             # get pixels along boundary
-            boundary = get_boundary(refined,1)
-            if th.sum(boundary) == 0: continue
+            bndy = get_boundary(refined,1)
+            if th.sum(bndy) == 0: continue
 
             # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
-            with th.no_grad():
-                logits = bsam(image, coarse_s, refined, aux, scale=scale, iftrs=iftrs, sftrs=sftrs)
+            query  = scale*th.stack(th.where(bndy)).view(-1,2)+(scale-1)/2.0
+            mftrs  = bsam.mask_features(coarse_s, refined, scale, (H,W) )
+            logits = bsam(query, iftrs_s, sftrs, mftrs, context, (H,W) )
                 
             # -=-=- compute accuracy for 0s and 1s -=-=-=-
-            gt_BR   = gt_s[aux > 0].float()
+            gt_B   = gt_s[aux].float()
             preds   = (logits > 0).float()
-            n0      = (gt_BR == 0).sum().item()
-            n1      = (gt_BR == 1).sum().item()
-            corr0   = ((preds == gt_BR)[gt_BR == 0]).sum().item()
-            corr1   = ((preds == gt_BR)[gt_BR == 1]).sum().item()
+            n0      = (gt_B == 0).sum().item()
+            n1      = (gt_B == 1).sum().item()
+            corr0   = ((preds == gt_B)[gt_B == 0]).sum().item()
+            corr1   = ((preds == gt_B)[gt_B == 1]).sum().item()
             acc0    = corr0 / max(n0, 1)
             acc1    = corr1 / max(n1, 1)
 

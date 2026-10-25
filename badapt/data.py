@@ -135,7 +135,7 @@ class SegData(Dataset):
         mask = load_mask(mask_path)   # binary HW uint8
         if len(img.shape) == 2:
             img = np.repeat(img[:,:,None], 3, axis=2)
-        img = th.tensor(img.copy(), dtype=th.float32).permute(2, 0, 1)
+        img = th.tensor(img, dtype=th.float32)
 
         if self.allow_multimask:
             labels, num_labels = ndimage.label(mask)
