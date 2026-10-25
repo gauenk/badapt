@@ -132,6 +132,7 @@ class BSAM(nn.Module):
         qM = read_points(fM,gM,1,sM) # mask
         qI = read_points(fI,gI,scale,sI) # image
         qS = read_points(fS,gS,scale,sS) # semantic
+        # exit()
 
         # -- decode --
         logits = self.imnet(qI, qS, qM, context.view(1, -1))  # (N,)
@@ -247,7 +248,6 @@ class PointwiseNet(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, inp0, inp1, inpM, context):
-        print(inp1.shape,context.shape)
         return th.sum(inp1[:,:32]*context,dim=-1)
 
         # lift features to latent space

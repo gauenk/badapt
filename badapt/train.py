@@ -82,7 +82,7 @@ def train_step(cfg,bsam,optim,data,log):
             bndy,aux = get_training_boundary(refined,aux_points)
 
             # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
-            query  = scale*th.stack(th.where(aux)).view(-1,2)+(scale-1)/2.0
+            query  = scale*th.stack(th.where(aux)).T+(scale-1)/2.0
             iftrs  = bsam.iftr_net_ms(bsam.iftr_net(iftrs_raw),scale)
             mftrs  = bsam.mftr_net(coarse_s, refined, scale, (H,W) )
             logits = bsam(aux, iftrs, sftrs, mftrs, context, (H,W) )
@@ -257,7 +257,7 @@ def val_step(cfg, bsam, data, log):
             if th.sum(bndy) == 0: continue
 
             # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
-            query  = scale*th.stack(th.where(bndy)).view(-1,2)+(scale-1)/2.0
+            query  = scale*th.stack(th.where(bndy)).T+(scale-1)/2.0
             mftrs  = bsam.mask_features(coarse_s, refined, scale, (H,W) )
             logits = bsam(query, iftrs_s, sftrs, mftrs, context, (H,W) )
                 

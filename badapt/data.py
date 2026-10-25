@@ -102,7 +102,7 @@ class SegData(Dataset):
         nsamples: If > 0, only the first *nsamples* pairs (sorted) are used.
     """
 
-    def __init__(self, img_dir: Path, mask_dir: Path, dname: str = "na", nsamples: int = 0, allow_multimask: bool = True, transform = None):
+    def __init__(self, img_dir: Path, mask_dir: Path, dname: str = "na", nsamples: int = 0, allow_multimask: bool = False, transform = None):
         
         self.transform = transform
         self.allow_multimask = allow_multimask
@@ -179,7 +179,7 @@ def load_mask(path: Path) -> np.ndarray:
 
 
 def create_dataloaders(name_im_gt_list, my_transforms=[], batch_size=1, training=False,
-                       use_dist=False, debug=False, allow_multimask=True):
+                       use_dist=False, debug=False, allow_multimask=False):
     DEBUG_N    = 1
     DEBUG_SEED = 43
 

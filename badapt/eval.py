@@ -55,29 +55,23 @@ def eval_refiner(rname,dname,potts,steps,scales):
     record = defaultdict(list)
     for img_id,dets in dts_by_img_id.items():
 
-        # -- read coarse masks --
-        # dets = dts_by_img_id[img_id]
+        # -=-=- get (image, mask) pair -=-=-
+        sample = data[img_id]
+        image  = sample['image'].cuda(non_blocking=True)
+        gt = (sample['label'].round() > 128.0).int().cuda(non_blocking=True)
+        if gt.shape[0] == 0: return False
+        assert(gt.shape[0] == 1)
+        gt = gt[0]
+
+        # -=-=-=- read coarse masks -=-=-=-
         coarse,_ = read_annos(dets)
         if coarse.shape[0] == 0: continue
         assert(coarse.shape[0] == 1)
         coarse = th.from_numpy(coarse[0]).to(device).to(th.uint8)
 
-        # -=-=- get (image, mask) pair -=-=-
-        sample = data[img_id]
-        image  = sample['image'].cuda(non_blocking=True)
-        # image = (image/255.0 - img_mean[None, None, :]) / img_std[None, None, :]
-        gt = (sample['label'].round() > 128.0).int().cuda(non_blocking=True)
-        if gt.shape[0] == 0: return False
-        print(gt.shape)
-        if gt.shape[0] > 1:
-            print(data.pairs[img_id])
-        assert(gt.shape[0] == 1)
-        gt = gt[0]
-
         # -- run sam [very optional... just read coarse from file...] --
         # coarse = run_sam(sam,image,gt)[0][0].to(th.uint8)
-        miou_coarse = float(np.mean(compute_iou(coarse, gt)))
-        print(miou_coarse)
+        # miou_coarse = float(compute_iou(coarse, gt))
 
         # -=-=-=- get refined mask -=-=--
         if rname == "bsam":
@@ -86,17 +80,19 @@ def eval_refiner(rname,dname,potts,steps,scales):
             refined = run_sam_refiner(refiner,rname,image,coarse,steps)
 
         # -=-=-=- compute mIoU -=-=-=-
-        miou_coarse = float(np.mean(compute_iou(coarse, gt)))
-        miou_refined = float(np.mean(compute_iou(refined, gt)))
-        print(img_id,miou_coarse,miou_refined)
+        miou_coarse = float(compute_iou(coarse, gt))
+        miou_refined = float(compute_iou(refined, gt))
+        # print(img_id,miou_coarse,miou_refined)
 
         # -=-=-=- compute bIoU -=-=-=-
         coarse_b = mask_to_boundary(coarse)
         refined_b = mask_to_boundary(refined)
         gt_b = mask_to_boundary(gt)
-        biou_coarse = float(np.mean(compute_iou(coarse_b, gt_b)))
-        biou_refined = float(np.mean(compute_iou(refined_b, gt_b)))
-        print(img_id,"mIoU: ",(miou_coarse,miou_refined),"bIoU: ",(biou_coarse,biou_refined))
+        biou_coarse = float(compute_iou(coarse_b, gt_b))
+        biou_refined = float(compute_iou(refined_b, gt_b))
+
+        # -=-=-=- summary -=-=-=-=-
+        print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f]" % (img_id,miou_coarse,miou_refined,biou_coarse,biou_refined))
 
         # -- record --
         record['mIoU-C'].append(miou_coarse)
@@ -117,24 +113,24 @@ def compute_iou(pred, anno):
     if not th.is_tensor(anno):
         anno = th.from_numpy(anno).to(pred.device)
 
-    ious = []
-    NumObjs = pred.shape[0]
-    for obj_ix in range(NumObjs):
-        pred_mask = (pred[obj_ix] > 0)
-        anno_mask = (anno[obj_ix] > 0)
+    if pred.ndim == 3:
+        pred = pred[0]
+        anno = anno[0]
+        assert(pred.shape[0]==1)
+        assert(anno.shape[0]==1)
+    assert(pred.ndim == 2)
+    assert(anno.ndim == 2)
 
-        intersection = th.logical_and(pred_mask, anno_mask).sum().item()
-        union = th.logical_or(pred_mask, anno_mask).sum().item()
+    pred_mask = (pred > 0)
+    anno_mask = (anno > 0)
 
-        if anno_mask.sum() == 0:
-            iou = -1.0
-        elif union == 0:
-            iou = float('nan')  # class not present
-        else:
-            iou = intersection / union
-        ious.append(iou)
-    ious = np.array(ious)
-    return ious
+    intersection = th.logical_and(pred_mask, anno_mask).sum().item()
+    union = th.logical_or(pred_mask, anno_mask).sum().item()*1.0
+
+    any_b = th.any(anno_mask)
+    iou = (intersection / union)*100 if any_b>0 else -1.0
+
+    return iou
 
 def mask_to_boundary(mask, dilation_ratio=0.02):
     """

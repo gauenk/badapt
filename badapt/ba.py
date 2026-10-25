@@ -52,7 +52,7 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
 
             # get boundary points
             bndy = get_boundary(refined)
-            query  = scale*th.stack(th.where(bndy)).view(-1,2)+(scale-1)/2.0
+            query  = scale*th.stack(th.where(bndy)).T+(scale-1)/2.0
             if query.shape[0] == 0: continue
 
             # log[p(x|z_i=1,..)/p(x|z_i=0,...)] \approx BSAM(...)
