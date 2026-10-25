@@ -61,7 +61,6 @@ class BSAM(nn.Module):
         self.mask_scale_beta  = nn.ParameterList([nn.Parameter(th.zeros(64)) for _ in self.scales])
 
         # -- coordinate encoder --
-        #self.coord_encoder
         self.pos_encoder = FourierCoordEncoder(num_freqs=8, max_freq_log2=8)
         pos_dim = self.pos_encoder.out_dim
 
@@ -70,9 +69,18 @@ class BSAM(nn.Module):
         self.reset()
 
         # -- load bsam checkpoint --
-        translate = {"NarrativeImNet":"PointwiseNet","ftrs0_proj":"iftr_net","FourierCoordEncoder_v2":"FourierCoordEncoder"}
         state = th.load(checkpoint_fname)['model_state']
-        self.load_state_dict(state,strict=False)
+        translate = {"NarrativeImNet":"PointwiseNet","coord_encoder":"pos_encoder",
+                     "ftrs0_proj":"iftr_net","FourierCoordEncoder_v2":"FourierCoordEncoder"}
+        renamed_state = {}
+        for old_k,v in state.items():
+            new_k = old_k
+            for old_str,new_str in translate.items():
+                if old_str in old_k:
+                    new_k = old_k.replace(old_str,new_str)
+                    break
+            renamed_state[new_k] = v
+        self.load_state_dict(renamed_state,strict=True)
         
     def reset(self):
         self.gridI    = None
@@ -248,7 +256,6 @@ class PointwiseNet(nn.Module):
                     nn.init.zeros_(m.bias)
 
     def forward(self, inp0, inp1, inpM, context):
-        return th.sum(inp1[:,:32]*context,dim=-1)
 
         # lift features to latent space
         q = inp0.shape[0]
@@ -260,8 +267,6 @@ class PointwiseNet(nn.Module):
         # fusion of semantic and low-level features
         g = self.scale_gate(context).unsqueeze(1)   # [bs, 1, hidden]
         fused = g * f0 + (1 - g) * f1            # [bs, q, hidden]
-        print(inp0.shape,inp1.shape,inpM.shape,context.shape,fused.shape)
-        # print(fused.shape,q)
         fused = fused.view(q,-1)
         fused = self.fuse(fused)
 
