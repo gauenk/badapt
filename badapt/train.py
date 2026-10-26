@@ -20,7 +20,7 @@ def launch_training(cfg,bsam,optim,tr_data,val_data):
     # -=-=- init -=-=-=-
     tr_log = {str(s): {"loss":0., "corr":0, "total":0, "count":0} for s in cfg.scales}
     cfg.device   = f"cuda:{cfg.local_rank}"
-    cfg.img_mean = cfg.img_mean.to(cfg.device)
+    cfg.img_mean = cfg.img_mean.to(cfg.device) # marked for deleting...
     cfg.img_std  = cfg.img_std.to(cfg.device)
 
     # -=-=- training loop -=-=-
