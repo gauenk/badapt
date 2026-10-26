@@ -4,9 +4,6 @@ import torch as th
 import torch.nn.functional as F
 from badapt.ba_triton import get_boundary,check_is_changeable,log_potts_ratio,remove_artifacts,find_islands,find_strands
 
-import sclr
-
-
 # Algorithm 1
 @th.no_grad()
 def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None):
