@@ -1,10 +1,12 @@
 
+# -- base --
 import math
 import torch as th
 import torch.nn.functional as F
 
 # -- cuda --
-import badapt._ba_cuda as ba_cuda
+from badapt import _ba_cuda as ba_cuda
+# import badapt._ba_cuda as ba_cuda
 get_boundary = ba_cuda.get_boundary
 check_is_changeable = ba_cuda.check_is_changeable
 log_potts_ratio = ba_cuda.log_potts_ratio

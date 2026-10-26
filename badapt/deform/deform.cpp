@@ -1,6 +1,10 @@
 
-#include "deform.hpp"
 
+
+#include <torch/extension.h>
+#include <cstdint>
+#include <vector>
+#include <array>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -9,6 +13,26 @@
 #include <stdexcept>
 #include <utility>
 #include <limits>
+
+using Point = std::array<int, 2>;
+using Contour = std::vector<Point>;
+
+void deform_seg_core(
+    const uint8_t* data,
+    int h,
+    int w,
+    float iou_target,
+    int seed,
+    uint8_t* output
+);
+
+std::vector<Contour> deform_contours_core(
+    const std::vector<Contour>& contours,
+    float regional_sample_rate,
+    float sample_rate,
+    float move_rate,
+    int seed
+);
 
 // ------------------------------------------------------------
 // Kernel generation
@@ -491,4 +515,88 @@ std::vector<Contour> deform_contours_core(
     }
 
     return output;
+}
+
+
+
+
+
+
+/*********************************************************************************
+
+
+                              PyBind11
+
+
+**********************************************************************************/
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.doc() = "C++ deformation operations";
+
+    m.def(
+        "deform_seg",
+        [](torch::Tensor input,
+           float iou_target,
+           int seed) -> torch::Tensor {
+
+            TORCH_CHECK(
+                input.device().is_cpu(),
+                "input must be a CPU tensor"
+            );
+
+            TORCH_CHECK(
+                input.scalar_type() == torch::kUInt8,
+                "input must have dtype torch.uint8"
+            );
+
+            TORCH_CHECK(
+                input.dim() == 2,
+                "input must have shape (H, W)"
+            );
+
+            input = input.contiguous();
+
+            const int h = static_cast<int>(input.size(0));
+            const int w = static_cast<int>(input.size(1));
+
+            auto output = torch::empty_like(input);
+
+            deform_seg_core(
+                input.data_ptr<uint8_t>(),
+                h,
+                w,
+                iou_target,
+                seed,
+                output.data_ptr<uint8_t>()
+            );
+
+            return output;
+        },
+        pybind11::arg("input"),
+        pybind11::arg("iou_target"),
+        pybind11::arg("seed") = -1
+    );
+
+    m.def(
+        "deform_contours",
+        [](const std::vector<std::vector<std::array<int, 2>>>& contours,
+           float regional_sample_rate,
+           float sample_rate,
+           float move_rate,
+           int seed) {
+
+            return deform_contours_core(
+                contours,
+                regional_sample_rate,
+                sample_rate,
+                move_rate,
+                seed
+            );
+        },
+        pybind11::arg("contours"),
+        pybind11::arg("regional_sample_rate"),
+        pybind11::arg("sample_rate"),
+        pybind11::arg("move_rate"),
+        pybind11::arg("seed") = -1
+    );
 }

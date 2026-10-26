@@ -2,7 +2,7 @@
 
 import os
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtension
 
 setup(
     name="badapt",
@@ -20,10 +20,10 @@ setup(
             library_dirs=["bin"],
         ),
 
-        # CppExtension('bin.perturb_seg_cpp',
-        #     sources=['sclr/csrc/perturb_seg.cpp'],
-        #     extra_compile_args=['-O3', '-w'],
-        # ),
+        CppExtension('badapt._deform_cpp',
+            sources=['badapt/deform/deform.cpp'],
+            extra_compile_args=['-O3', '-w'],
+        ),
     ],
     cmdclass={
         "build_ext": BuildExtension.with_options(use_ninja=True),

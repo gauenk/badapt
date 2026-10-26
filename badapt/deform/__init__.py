@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 
-import cppyy
 import numpy as np
 import ctypes
 import cv2
@@ -10,21 +9,7 @@ import cv2
 
 import random
 import torch as th
-
-
-# ------------------------------------------------------------
-#     Load and compile C++ implementation
-# ------------------------------------------------------------
-
-
-HERE = Path(__file__).resolve().parent
-
-cppyy.add_include_path(str(HERE))
-cppyy.include("deform.hpp")
-
-cppyy.cppdef(
-    '#include "deform.cpp"'
-)
+from badapt import _deform_cpp as deform_cpp
 
 # ------------------------------------------------------------
 #      Main Deformation Function
@@ -63,14 +48,15 @@ def deform_mask(mask, regional_sample_rate=0.1, sample_rate=0.1, iou_target = 0.
 #         Deform the Mask
 # ------------------------------------------------------------
 
+
 def deform_seg(gt, iou_target=0.8, seed=-1):
     """
-    Perturb a 2D segmentation mask.
+    Perturb a 2D segmentation mask using the C++ deformation extension.
 
     Parameters
     ----------
-    gt : np.ndarray
-        2D image or segmentation mask.
+    gt : np.ndarray or th.Tensor
+        2D segmentation mask. Must be convertible to a CPU uint8 tensor.
     iou_target : float
         Target IoU threshold.
     seed : int
@@ -81,38 +67,32 @@ def deform_seg(gt, iou_target=0.8, seed=-1):
     np.ndarray
         Perturbed uint8 mask with shape (H, W).
     """
-    gt = np.ascontiguousarray(gt, dtype=np.uint8)
+    # Convert input to a contiguous CPU uint8 tensor.
+    if isinstance(gt, np.ndarray):
+        gt = np.ascontiguousarray(gt, dtype=np.uint8)
+        gt = th.from_numpy(gt)
+    elif isinstance(gt, th.Tensor):
+        gt = gt.to(device="cpu", dtype=th.uint8).contiguous()
+    else:
+        raise TypeError("Input must be a NumPy array or th.Tensor")
 
     if gt.ndim != 2:
         raise ValueError("Input must be a 2D array")
 
     h, w = gt.shape
-    output = np.empty((h, w), dtype=np.uint8)
 
     if h == 0 or w == 0:
-        return output
-    
-    # Pass NumPy buffers as typed C++ pointers.
-    gt_ptr = ctypes.cast(
-        gt.ctypes.data,
-        ctypes.POINTER(ctypes.c_uint8),
-    )
-    
-    out_ptr = ctypes.cast(
-        output.ctypes.data,
-        ctypes.POINTER(ctypes.c_uint8),
-    )
+        return np.empty((h, w), dtype=np.uint8)
 
-    cppyy.gbl.deform_seg_core(
-        gt_ptr,
-        int(h),
-        int(w),
+    # Call the pybind11 extension.
+    output = deform_cpp.deform_seg(
+        gt,
         float(iou_target),
         int(seed),
-        out_ptr,
     )
 
-    return output
+    # Return a NumPy array, preserving the original wrapper's behavior.
+    return output.numpy()
 
 
 # ------------------------------------------------------------
@@ -127,12 +107,29 @@ def deform_contours(
     seed=-1,
 ):
     """
-    Process contours returned by cv2.findContours().
+    Deform contours returned by cv2.findContours() using the C++ extension.
 
-    Returns a list of int32 arrays with shape (N, 1, 2),
-    suitable for cv2.drawContours().
+    Parameters
+    ----------
+    contours : list of np.ndarray
+        Contours, typically with shape (N, 1, 2), as returned by
+        cv2.findContours().
+    regional_sample_rate : float
+        Regional sampling rate.
+    sample_rate : float
+        Point sampling rate.
+    move_rate : float
+        Point movement rate.
+    seed : int
+        Random seed; negative values use nondeterministic seeding.
+
+    Returns
+    -------
+    list of np.ndarray
+        Deformed contours as int32 arrays with shape (N, 1, 2),
+        suitable for cv2.drawContours().
     """
-    cpp_contours = cppyy.gbl.std.vector["Contour"]()
+    cpp_contours = []
 
     for contour in contours:
         arr = np.asarray(contour)
@@ -140,19 +137,17 @@ def deform_contours(
         if arr.size == 0:
             continue
 
-        arr = np.ascontiguousarray(arr.reshape(-1, 2), dtype=np.int32)
+        arr = np.asarray(arr).reshape(-1, 2)
 
-        c = cppyy.gbl.Contour()
+        # Convert each point to a pair of Python integers.
+        cpp_contour = [
+            [int(x), int(y)]
+            for x, y in arr
+        ]
 
-        for x, y in arr:
-            point = cppyy.gbl.Point()
-            point[0] = int(x)
-            point[1] = int(y)
-            c.push_back(point)
+        cpp_contours.append(cpp_contour)
 
-        cpp_contours.push_back(c)
-
-    result = cppyy.gbl.deform_contours_core(
+    result = deform_cpp.deform_contours(
         cpp_contours,
         float(regional_sample_rate),
         float(sample_rate),
@@ -163,15 +158,9 @@ def deform_contours(
     output = []
 
     for contour in result:
-        points = np.empty((len(contour), 1, 2), dtype=np.int32)
-
-        for i, point in enumerate(contour):
-            points[i, 0, 0] = point[0]
-            points[i, 0, 1] = point[1]
-
+        points = np.asarray(contour, dtype=np.int32).reshape(-1, 1, 2)
         output.append(points)
 
     return output
-
 
 
