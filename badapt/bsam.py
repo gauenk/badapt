@@ -88,76 +88,43 @@ class BSAM(nn.Module):
         self.gridM    = None
 
     @th.no_grad()
-    def get_global_features(self, image, mask):
-        iftrs_raw,sftrs,context = self.get_sam_features(image,mask)
-        iftrs = self.iftr_net(iftrs_raw)
-        return iftrs,sftrs,context
-
-    @th.no_grad()
     def get_sam_features(self, image, mask):
-        """
-        Run everything that is scale-independent once and cache it.
-        mask : (H, W) — initial (coarse) mask at native resolution.
-        Call reset_cache() before processing a new image.
-        """
         with th.no_grad():
             iftrs_raw,sftrs,context = run_sam(self.sam['sam'], image, mask)
         return iftrs_raw,sftrs,context
 
-    def _get_grids(self, HW, iHW, sHW, mHW, device):
-        if self.gridI is None:
-            scale = 1024 / max(HW)
-            self.gridI = make_grid(iHW, scale, 1024/iHW[0], device=device)
-            self.gridS = make_grid(sHW, scale, 1024/sHW[0], device=device)
-            self.gridM = make_grid(mHW, 1,     self.stride0,device=device)
-        return self.gridI, self.gridS, self.gridM
+    def iftr_net_ms(self, iftrs, scale):
+        """
+        Mix cached native-res ftrs0_base with mask_cur and curr_mask,
+        then apply scale FiLM so imnet knows the current multiscale context.
 
-    def forward(self, query, fI, fS, fM, context, HW):
+        ftrs0_base : (1, Fll, fH0, fW0)  — native-res, cached
+        obj_masks  : (1, H_s, W_s)       — mask at scaled resolution
+        curr_mask  : (1, H_s, W_s)       — previous step mask (same scale)
+        ms_scale   : int                  — e.g. 16, 8, 4, 2, 1
+        """
 
-        def read_points(ftrs,fgrids,scale,stride):
-            fH, fW = ftrs.shape[-2:]
-            row = ((query[:, 0]*scale) / stride).long().clamp(0, fH - 1) # native-res to ftr-res index
-            col = ((query[:, 1]*scale) / stride).long().clamp(0, fW - 1)
-            pos     = fgrids[row, col] # full grid @ ftr-res to (N,2) with values @ nativ-res
-            rel_pos = query - pos # offset in native-res
-            pos_enc = self.pos_encoder(rel_pos)   # (N, grid_ndim)
-            pos_feat  = ftrs[0, :, row, col].T  # (N, Fll)
-            inp = th.cat([pos_feat, pos_enc], dim=-1)   # (N, Fll+grid_ndim)
-            return inp
-
-        # -- gridinate grids (cached in native-pixel space) --
-        device = fI.device
-        iHW,sHW,mHW = fI.shape[-2:],fS.shape[-2:],fM.shape[-2:]
-        gI, gS, gM = self._get_grids(HW, iHW, sHW, mHW, device)
-        
-        # -- prepare reading --
-        scale = 1024 / max(HW)
-        sM = self.stride0
-        sI = 1024 / iHW[0]
-        sS = 1024 / sHW[0]
-
-        # -- read pointwise info --
-        qM = read_points(fM,gM,1,sM) # mask
-        qI = read_points(fI,gI,scale,sI) # image
-        qS = read_points(fS,gS,scale,sS) # semantic
-        # exit()
-
-        # -- decode --
-        logits = self.imnet(qI, qS, qM, context.view(1, -1))  # (N,)
-        return logits
-
-    def _get_patchify_padding(self, imgs):
-        stride = self.stride0
-        H, W = imgs.shape[-2:]
-        pad_h = (stride - H % stride) % stride
-        pad_w = (stride - W % stride) % stride
-        if pad_h > 0 or pad_w > 0:
-            imgs = F.pad(imgs, (0, pad_w, 0, pad_h))
-        return imgs, (pad_h, pad_w)
-
+        # -- scale FiLM --
+        scale_idx = self.scales.index(scale)
+        gamma = self.ll_scale_gamma[scale_idx]
+        beta  = self.ll_scale_beta[scale_idx]
+        iftrs = (1 + gamma)[None, :, None, None] * iftrs \
+            +      beta  [None, :, None, None]
+        return iftrs  # (1, Fll, fH0, fW0)
 
     def mftr_net(self, coarse, refined, scale, HW):
+
+        def _get_patchify_padding(self, imgs):
+            stride = self.stride0
+            H, W = imgs.shape[-2:]
+            pad_h = (stride - H % stride) % stride
+            pad_w = (stride - W % stride) % stride
+            if pad_h > 0 or pad_w > 0:
+                imgs = F.pad(imgs, (0, pad_w, 0, pad_h))
+            return imgs, (pad_h, pad_w)
+
         def encode_mask(mask_s, proj):
+
             # nearest upsample to native res — block size = scale pixels
             mask_native = F.interpolate(
                 mask_s[None, None].float(), size=HW, mode='nearest'
@@ -180,38 +147,51 @@ class BSAM(nn.Module):
             +   beta  [None, :, None, None]
         return mftrs  # (1, Fll, fH0, fW0)
 
-    def iftr_net_ms(self, iftrs, scale):
-        """
-        Mix cached native-res ftrs0_base with mask_cur and curr_mask,
-        then apply scale FiLM so imnet knows the current multiscale context.
+    def _get_grids(self, HW, iHW, sHW, mHW, sI, sS, sM, scale, device):
 
-        ftrs0_base : (1, Fll, fH0, fW0)  — native-res, cached
-        obj_masks  : (1, H_s, W_s)       — mask at scaled resolution
-        curr_mask  : (1, H_s, W_s)       — previous step mask (same scale)
-        ms_scale   : int                  — e.g. 16, 8, 4, 2, 1
-        """
+        def make_grid(shape, scale, s, device=None):
+            fH, fW = shape
+            row_seq = (th.arange(fH, device=device).float() * s + (s - 1) / 2.0) / scale
+            col_seq = (th.arange(fW, device=device).float() * s + (s - 1) / 2.0) / scale
+            ret = th.stack(th.meshgrid(row_seq, col_seq, indexing='ij'), dim=-1)
+            return ret  # [fH, fW, 2], values in native pixel space
+        
+        if self.gridI is None: # cached across BA steps
+            self.gridI = make_grid(iHW, scale, sI, device=device)
+            self.gridS = make_grid(sHW, scale, sS, device=device)
+            self.gridM = make_grid(mHW,     1, sM, device=device)
+        return self.gridI, self.gridS, self.gridM
 
-        # -- scale FiLM --
-        scale_idx = self.scales.index(scale)
-        gamma = self.ll_scale_gamma[scale_idx]
-        beta  = self.ll_scale_beta[scale_idx]
-        iftrs = (1 + gamma)[None, :, None, None] * iftrs \
-            +      beta  [None, :, None, None]
-        return iftrs  # (1, Fll, fH0, fW0)
+    def forward(self, query, fI, fS, fM, context, HW):
 
-    def ba(self,image,coarse,potts_coeff=0.0,steps=None,scales=None):
-        return boundary_adaptation(self,image,coarse,potts_coeff,steps,scales)
+        def read_points(ftrs,fgrids,scale,stride):
+            fH, fW = ftrs.shape[-2:]
+            row = ((query[:, 0]*scale) / stride).long().clamp(0, fH - 1) # native-res to ftr-res index
+            col = ((query[:, 1]*scale) / stride).long().clamp(0, fW - 1)
+            pos     = fgrids[row, col] # full grid @ ftr-res to (N,2) with values @ nativ-res
+            rel_pos = query - pos # offset in native-res
+            pos_enc = self.pos_encoder(rel_pos)   # (N, grid_ndim)
+            pos_feat  = ftrs[0, :, row, col].T  # (N, Fll)
+            inp = th.cat([pos_feat, pos_enc], dim=-1)   # (N, Fll+grid_ndim)
+            return inp
 
+        # -- prepare reading --
+        device = fI.device
+        scale = 1024 / max(HW)
+        iHW,sHW,mHW = fI.shape[-2:],fS.shape[-2:],fM.shape[-2:]
+        sI,sS,sM = 1024 / iHW[0], 1024 / sHW[0], self.stride0
 
-def make_grid(shape, scale, s, device=None):
-    fH, fW = shape
-    # orig_H, orig_W = orig
-    # scale = 1024 / max(orig_H, orig_W)
-    # s = 1024 / fH  # stride in resized space (16 or 4)
-    row_seq = (th.arange(fH, device=device).float() * s + (s - 1) / 2.0) / scale
-    col_seq = (th.arange(fW, device=device).float() * s + (s - 1) / 2.0) / scale
-    ret = th.stack(th.meshgrid(row_seq, col_seq, indexing='ij'), dim=-1)
-    return ret  # [fH, fW, 2], values in native pixel space
+        # -- get grids ( grid @ ftrs.shape but values @ native-image.shape ) --
+        gI, gS, gM = self._get_grids(HW, iHW, sHW, mHW, sI, sS, sM, scale, device)
+        
+        # -- read pointwise info --
+        qM = read_points(fM,gM,1,sM) # mask
+        qI = read_points(fI,gI,scale,sI) # image
+        qS = read_points(fS,gS,scale,sS) # semantic
+
+        # -- decode --
+        logits = self.imnet(qI, qS, qM, context.view(1, -1))  # (N,)
+        return logits
 
 class PointwiseNet(nn.Module):
 
@@ -376,9 +356,6 @@ def run_sam(sam,image,mask):
     iftrs_raw = rearrange(iftrs_raw,'1 h w c -> 1 c h w')
 
     # -- get prompts --
-    # print(image.shape,mask.shape,enc.shape)
-    # print(image.max(),mask.max())
-    # exit()
     image_record = sam_input_prepare(image, mask[None,:], enc[0], resize, gamma=4.0, strength=30)[0]
 
     # -- run mask decoder --

@@ -22,16 +22,18 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     def unwrap(bsam):
         return bsam.module if hasattr(bsam, 'module') else bsam
 
-    # be prepared!
+    # -- be prepared! --
     device = image.device
     H, W, C = image.shape
-    HW = (H,W)
-    bsam = bsam.eval()
     bsam.to(device)
     bsam.sam['sam'].to(device)
+    bsam.eval()
     bsam = unwrap(bsam)
     bsam.reset()
-    iftrs,sftrs,context = bsam.get_global_features(image,coarse)
+
+    # -- extract base features --
+    iftrs_raw,sftrs,context = bsam.get_sam_features(image,coarse)
+    iftrs = bsam.iftr_net(iftrs_raw)
 
     # -- [dev only]; run hqsam-refiner from here --
     # refined = (th.sum(sftrs*context[:,:,None,None],dim=1)>0).int()[0]

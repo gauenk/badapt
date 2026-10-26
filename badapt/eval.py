@@ -7,9 +7,6 @@ import torch as th
 
 # from badapt.sam_refiner import run_sam_refiner
 from badapt.bsam import BSAM,boundary_adaptation
-# def boundary_adaptation(): pass
-# class BSAM(th.nn.Module):
-#     def __init__(*args): pass
 from badapt.data import get_eval_dataset
 from segment_anything import sam_model_registry,SamPredictor
 

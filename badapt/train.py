@@ -7,6 +7,13 @@ import pandas as pd
 from badapt.deform import deform_mask
 from badapt.ba import get_boundary,ba_step,oracle_ba_step
 
+# ---------------------------------------
+#
+#
+#     -=-=-=- Train/Val Loop -=-=-=-=-
+#
+#
+# ---------------------------------------
 
 def launch_training(cfg,bsam,optim,tr_data,val_data):
 
@@ -34,6 +41,39 @@ def launch_training(cfg,bsam,optim,tr_data,val_data):
 
     return
 
+def print_train_log(stats,global_step):
+
+    # -=-=- build logging string -=-=-
+    parts = []
+    scales = stats.keys()
+    for scale in scales:
+        key = str(scale)
+        a   = stats[key]
+        avg_loss = a["loss"] / max(a["count"], 1)
+        acc      = a["corr"] / max(a["total"], 1)
+        parts.append(f"x{scale}[loss={avg_loss:.3f} acc={acc:.3f}]")
+
+    # -=-=- actually print it -=-=-
+    print(f"[step {global_step}]  " + "  ".join(parts))
+
+    # -=-= reset -=-=-
+    for s in scales:
+        stats[s] = {"loss":0., "corr":0, "total":0, "count":0} 
+
+def save_checkpoint(cfg,bsam,optim):
+    ckpt_path = (
+        cfg.save_root /
+        f"checkpoint_{cfg.dname}_{cfg.model_name}_{cfg.global_step}.pt"
+    )
+    bsam_state = (
+        bsam.module.state_dict() if cfg.use_dist else bsam.state_dict()
+    )
+    th.save(
+        {"step": cfg.global_step, "epoch": cfg.epoch,"model_state": bsam_state},
+        ckpt_path,
+    )
+    print(f"[checkpoint] saved to {ckpt_path}")
+
 
 # ---------------------------------------
 #
@@ -48,8 +88,8 @@ def train_step(cfg,bsam,optim,data,log):
     # -=-=- get (image, mask) pair -=-=-
     batch = next(data, None)
     if batch is None: return True
-    image  = (batch['image'] / 255.0).cuda(non_blocking=True)
-    image = (image - cfg.img_mean[None, None, None, :]) / cfg.img_std[None, None, None, :]
+    image  = batch['image'].cuda(non_blocking=True)
+    # image = (image/255.0 - cfg.img_mean[None, None, None, :]) / cfg.img_std[None, None, None, :]
     gt = (batch['label'][0].round() > 128.0).int()
     if gt.shape[0] == 0: return False
     assert(gt.shape[0] == 1)
@@ -60,6 +100,7 @@ def train_step(cfg,bsam,optim,data,log):
     coarse = deform_mask(gt,cfg.deform_rsr,cfg.deform_sr,cfg.deform_iou)
  
     # -=-=- reset coorindate caches & extract frozen features -=-=-
+    # bsam = unwrap(bsam)
     bsam.train()
     if hasattr(bsam, 'reset'): bsam.reset()
     else: bsam.module.reset()
@@ -193,9 +234,6 @@ def get_training_boundary(mask,aux_points='thicc'):
     return boundary,aux_boundary
 
 
-
-
-
 # ---------------------------------------
 #
 #
@@ -222,18 +260,19 @@ def val_step(cfg, bsam, data, log):
     # -=-=- deform the mask -=-=-=-
     coarse = deform_mask(gt,cfg.deform_rsr,cfg.deform_sr,cfg.deform_iou)
 
-    # -=-=- reset coorindate caches & extract frozen features -=-=-
+    # -=-=- reset coorindate caches & extract base, frozen features -=-=-
     bsam.eval()
     bsam = unwrap(bsam)
     bsam.reset()
-    iftrs,sftrs,context = bsam.get_global_features(image,coarse)
+    iftrs_raw,sftrs,context = bsam.get_sam_features(image,coarse)
+    iftrs = bsam.iftr_net(iftrs_raw)
     refined = coarse.clone()
 
     # -=-=- record baseline error -=-=-
     d_iou = np.mean(compute_miou(coarse, gt)[0])
     update_val_log(log,d_iou=d_iou)
 
-    # -=-=- inference -=-=-
+    # -=-=- Start dat inference baby! -=-=-
     refined = coarse.clone()
     for scale, nsteps in zip(scales, steps):
 
@@ -321,41 +360,6 @@ def print_val_log(record):
 #
 #
 # ---------------------------------------
-
-
-def print_train_log(stats,global_step):
-
-    # -=-=- build logging string -=-=-
-    parts = []
-    scales = stats.keys()
-    for scale in scales:
-        key = str(scale)
-        a   = stats[key]
-        avg_loss = a["loss"] / max(a["count"], 1)
-        acc      = a["corr"] / max(a["total"], 1)
-        parts.append(f"x{scale}[loss={avg_loss:.3f} acc={acc:.3f}]")
-
-    # -=-=- actually print it -=-=-
-    print(f"[step {global_step}]  " + "  ".join(parts))
-
-    # -=-= reset -=-=-
-    for s in scales:
-        stats[s] = {"loss":0., "corr":0, "total":0, "count":0} 
-
-
-def save_checkpoint(cfg,bsam,optim):
-    ckpt_path = (
-        cfg.save_root /
-        f"checkpoint_{cfg.dname}_{cfg.model_name}_{cfg.global_step}.pt"
-    )
-    bsam_state = (
-        bsam.module.state_dict() if cfg.use_dist else bsam.state_dict()
-    )
-    th.save(
-        {"step": cfg.global_step, "epoch": cfg.epoch,"model_state": bsam_state},
-        ckpt_path,
-    )
-    print(f"[checkpoint] saved to {ckpt_path}")
 
 def unwrap(model):
     return model.module if hasattr(model, 'module') else model
