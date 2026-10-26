@@ -11,9 +11,6 @@ log_potts_ratio = ba_cuda.log_potts_ratio
 find_islands = ba_cuda.find_islands
 find_strands = ba_cuda.find_strands
 
-# -- triton --
-# from badapt.ba.triton import get_boundary,check_is_changeable,log_potts_ratio,find_islands,find_strands
-
 # Algorithm 1
 @th.no_grad()
 def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None):
@@ -87,10 +84,10 @@ def ba_step(logits, mask, boundary, potts_coeff):
 
     # updating new mask
     mask = mask.clone() # contiguous() implied?
-    bcoords = th.stack(th.where(boundary),dim=-1).int()
+    query = th.stack(th.where(boundary),dim=-1).int()
 
     # Checkerboard coloring to avoid conflicting updates
-    color = (bcoords[:, 0] % 2) + 2 * (bcoords[:, 1] % 2)
+    color = (query[:, 0] % 2) + 2 * (query[:, 1] % 2)
     assert th.all(th.isin(color, th.tensor([0, 1, 2, 3], device=color.device)))
 
     for i in range(4):
@@ -98,20 +95,20 @@ def ba_step(logits, mask, boundary, potts_coeff):
         # -- select color & skip empty --
         sel_i = color == i
         if th.sum(sel_i) == 0: continue
-        bcoords_i = bcoords[sel_i]
+        query_i = query[sel_i].contiguous()
 
         # -- select only changable --
-        is_chng = check_is_changeable(mask, bcoords_i.contiguous())
-        bcoords_i = bcoords_i[is_chng]
+        is_chng = check_is_changeable(mask, query_i)
+        query_i = query_i[is_chng].int().contiguous()
         logits_i = logits[sel_i][is_chng]
 
         # -- [optional] Boundary Regularization with Potts Term  --
         if potts_coeff > 0:
-            lpotts = log_potts_ratio(mask,bcoords_i.int().contiguous())
+            lpotts = log_potts_ratio(mask,query_i)
             logits_i = logits_i - potts_coeff*lpotts
 
         # -- write. --
-        mask[bcoords_i[:, 0], bcoords_i[:, 1]] = (logits_i > 0.0).int()
+        mask[query_i[:, 0], query_i[:, 1]] = (logits_i > 0.0).int()
 
     return mask
 
@@ -172,7 +169,6 @@ def oracle_boundary_adaptation(gt,coarse,potts_coeff=0.0,
     # -- return --
     if return_seq: return th.stack(seq)
     else: return refined
-
 
 
 def example():

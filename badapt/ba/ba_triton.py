@@ -11,7 +11,7 @@ import cppyy
 import triton.language as tl
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
 
-
+# list of functions:
 # get_boundary
 # check_is_changeable
 # log_potts_ratio
@@ -52,19 +52,24 @@ def get_boundary_kernel(
     any_neq = tl.full((BLOCK_SIZE,), False, dtype=tl.int1)
 
     # Inspect the square neighborhood [-K, K] x [-K, K]
-    for kh in range(-K, K + 1):
-        for kw in range(-K, K + 1):
+    # for kh in range(-K, K + 1):
+    #     for kw in range(-K, K + 1):
+    for kh in tl.static_range(-K, K+1):
+        for kw in tl.static_range(-K, K+1):
 
             # Match the original corner exclusion:
             # skip only offsets where abs(kh) == 1 and abs(kw) == 1.
-            if NO_CORNERS and abs(kh) == 1 and abs(kw) == 1:
-                continue
+            # if NO_CORNERS and tl.abs(kh) == 1 and tl.abs(kw) == 1:
+            #     continue
+
+            invalid_d = NO_CORNERS & (tl.abs(kh) == 1) & (tl.abs(kw) == 1)
 
             ph = h + kh
             pw = w + kw
 
             neighbor_valid = (
                 valid
+                & (~invalid_d)
                 & (ph >= 0)
                 & (ph < H)
                 & (pw >= 0)
@@ -92,7 +97,7 @@ def get_boundary_kernel(
 def get_boundary(
     maps: th.Tensor,
     K: int = 1,
-    no_corners: bool = False,
+    no_corners: bool = True,
     no_bkg: bool = False,
 ) -> th.Tensor:
     """

@@ -77,7 +77,7 @@ torch::Tensor get_boundary(torch::Tensor mask, int K, bool no_corners) {
 
     // -- label boundaries --
     auto bndy = torch::zeros({H,W}, torch::dtype(torch::kBool).device(mask.device()));
-    int nthreads = 1024;
+    int nthreads = 512;
     int nblocks = (NumPixels - 1)/nthreads + 1;
     get_boundary_k<<<nblocks,nthreads>>>(bndy.data_ptr<bool>(),mask.data_ptr<int>(), H,W, K, no_corners);
 
