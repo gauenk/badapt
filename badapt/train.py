@@ -3,6 +3,7 @@
 import numpy as np
 import torch as th
 import pandas as pd
+from pathlib import Path
 
 import torch.nn.functional as F
 from badapt.deform import deform_mask
@@ -202,29 +203,10 @@ def print_train_log(stats,global_step):
 
 
 def save_checkpoint(cfg, bsam, optim):
-    ckpt_path = (
-        cfg.save_root /
-        f"checkpoint_{cfg.dname}_{cfg.model_name}_{cfg.global_step}.pt"
-    )
-
-    bsam_state = (
-        bsam.module.state_dict()
-        if cfg.use_dist
-        else bsam.state_dict()
-    )
-
-    th.save(
-        {
-            "step": cfg.global_step,
-            "epoch": cfg.epoch,
-            "model_state": bsam_state,
-        },
-        ckpt_path,
-    )
-
+    ckpt_path = Path(cfg.save_root)/f"checkpoint_{cfg.dname}_{cfg.global_step}.pt"
+    th.save({"step": cfg.global_step,
+             "model_state": unwrap(bsam).state_dict()},ckpt_path)
     log_msg(f"Checkpoint saved | {ckpt_path}")
-
-
 
 # ---------------------------------------
 #

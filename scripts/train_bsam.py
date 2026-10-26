@@ -6,8 +6,9 @@
 
 
 import os
-from easydict import EasyDict as edict
+from pathlib import Path
 from pprint import pformat
+from easydict import EasyDict as edict
 
 import torch as th
 from badapt.bsam import BSAM
@@ -70,16 +71,19 @@ def main():
     cfg.niters_train = 50_000
     cfg.log_every = 50
     cfg.val_every = 500
-    cfg.ckpt_every = 5000
+    # cfg.ckpt_every = 5000
+    cfg.ckpt_every = 2
     cfg.global_step = 0
+    cfg.save_root = "training_checkpoints"
 
     if cfg.local_rank == 0:
         print_config(cfg)
+    if not Path(cfg.save_root).exists():
+        Path(cfg.save_root).mkdir()
 
     bsam = BSAM()
     checkpoint = None
     if checkpoint: bsam.load(checkpoint)
-
     device = 'cuda'
     bsam = bsam.to(device)
     bsam.sam['sam'].to(device)
