@@ -5,18 +5,28 @@
 
 """
 
-
+import cv2
+import torch as th
 import numpy as np
 from PIL import Image
 from pathlib import Path
 
+import random
+from sclr import perturb_seg_cpp # temporary... triton soon?
+
+
 def deform_mask(mask, regional_sample_rate=0.1, sample_rate=0.1, iou_target = 0.8, allow_perturb=True, seed=None):
 
+    
     move_rate = 0.0
     if th.is_tensor(mask):
+        device = mask.device
         mask = mask.cpu().numpy()
-    original = mask.copy()
+    else:
+        device = 'cpu'
+    # original = mask.copy()
     if mask.max() == 1: mask = mask*255
+    mask = mask.astype(np.uint8)
 
     # get boundaries
     if int(cv2.__version__[0]) >= 4:
@@ -108,10 +118,11 @@ def deform_mask(mask, regional_sample_rate=0.1, sample_rate=0.1, iou_target = 0.
     if allow_perturb:
         mask = perturb_seg_cpp.perturb_seg(mask, iou_target, seed)
 
-    mask = mask / 255
-    mask = (mask >= 0.5).astype(np.uint8)
+    # mask = mask / 255
+    # mask = (mask >= 0.5).astype(np.uint8)
+    mask = (mask >= 0.5).astype(np.int32)
     
-    return mask
+    return th.from_numpy(mask).to(device)
 
 def main():
 

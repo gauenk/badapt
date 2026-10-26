@@ -2,13 +2,16 @@
 import math
 import torch as th
 import torch.nn.functional as F
+from badapt.ba_triton import get_boundary,check_is_changeable,log_potts_ratio,remove_artifacts,find_islands,find_strands
 
-from badapt.ba_triton import get_boundary,check_is_changeable,log_potts_ratio,remove_artifacts
+import sclr
+
 
 # Algorithm 1
 @th.no_grad()
 def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None):
 
+    # defaults and helpers and such...
     if steps is None: steps = [12,9,3]
     if scales is None: scales = [4,2,1]
     def interp(mask,_H,_W,mode='nearest',thresh=True):
@@ -16,10 +19,10 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
         mask = F.interpolate(mask.float()[None,None], size=(_H,_W), mode=mode, **kw)[0,0]
         if thresh: return (mask > 0.5).int()
         else: return mask
-
     def unwrap(bsam):
         return bsam.module if hasattr(bsam, 'module') else bsam
 
+    # be prepared!
     device = image.device
     H, W, C = image.shape
     HW = (H,W)
@@ -62,12 +65,10 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             # log[p(z_i=1|...)/p(z_i=0|...)] \approx BSAM(...) + log-Potts-ratio(...)
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
-            if scale == 1:
-                from sclr.isr_boundary import remove_strands
-                remove_strands(refined[None,:].int(),rm_strands=True,rm_islands=True)
-                # remove_artifacts(refined)
+            # manually remove strands and islands
+            if scale == 1: remove_artifacts(refined)
 
-    # -- ensure native-resolution --
+    # ensure native-resolution
     refined = interp(refined,H,W)
     
     return refined
@@ -89,26 +90,17 @@ def ba_step(logits, mask, boundary, potts_coeff):
         if th.sum(sel_i) == 0: continue
         bcoords_i = bcoords[sel_i]
 
-        import sclr
-        _is_chng = check_is_changeable(mask, bcoords_i.contiguous())
-        _bc = th.cat([th.zeros_like(bcoords_i[:,[0]]),bcoords_i],dim=-1).contiguous()
-        is_chng = sclr.sclr_cuda.check_is_changable(mask[None,:], _bc, 1)[0].bool()
-        print(_is_chng,is_chng)
-        exit()
-
-        # print("delta: ",th.mean(th.abs((is_chng.int() - _is_chng.int())*1.0)),_is_chng.sum(),is_chng.sum())
-        # norig = is_chng.sum().item()
-        # is_chng = th.ones_like(is_chng)
-        # print("NoChg: ",norig,is_chng.sum().item())
+        # -- select only changable --
+        is_chng = check_is_changeable(mask, bcoords_i.contiguous())
         bcoords_i = bcoords_i[is_chng]
         logits_i = logits[sel_i][is_chng]
 
-        # Optional Potts Term
+        # -- [optional] Boundary Regularization with Potts Term  --
         if potts_coeff > 0:
             lpotts = log_potts_ratio(mask,bcoords_i.int().contiguous())
             logits_i = logits_i - potts_coeff*lpotts
 
-        # Compute new labels
+        # -- write. --
         mask[bcoords_i[:, 0], bcoords_i[:, 1]] = (logits_i > 0.0).int()
 
     return mask
@@ -148,8 +140,7 @@ def oracle_boundary_adaptation(gt,image,coarse,potts_coeff=0.0,steps=None,scales
             # log[p(z_i=1|...)/p(z_i=0|...)] \approx BSAM(...) + log-Potts-ratio(...)
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
-            if scale == 1:
-                remove_artifacts(refined)
+            if scale == 1: remove_artifacts(refined)
 
     # -- ensure native-resolution --
     refined = interp(refined,H,W)

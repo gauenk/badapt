@@ -5,7 +5,7 @@
 """
 
 
-import torch
+import torch as th
 import triton
 import triton.language as tl
 DEVICE = triton.runtime.driver.active.get_active_torch_device()
@@ -88,11 +88,11 @@ def get_boundary_kernel(
 
 
 def get_boundary(
-    maps: torch.Tensor,
+    maps: th.Tensor,
     K: int = 1,
     no_corners: bool = False,
     no_bkg: bool = False,
-) -> torch.Tensor:
+) -> th.Tensor:
     """
     Args:
         maps: CUDA tensor of shape (B, H, W), containing integer labels.
@@ -107,15 +107,15 @@ def get_boundary(
     if maps.ndim == 2: maps = maps[None,:]
     assert maps.is_cuda, "maps must be on CUDA"
     assert maps.ndim == 3, "maps must have shape (B, H, W)"
-    assert maps.dtype == torch.int32, "maps must have dtype torch.int32"
+    assert maps.dtype == th.int32, "maps must have dtype th.int32"
     assert K >= 0, "K must be non-negative"
 
     B, H, W = maps.shape
     N = B * H * W
 
-    labels = torch.zeros(
+    labels = th.zeros(
         (B, H, W),
-        dtype=torch.bool,
+        dtype=th.bool,
         device=maps.device,
     )
 
@@ -153,19 +153,20 @@ def get_boundary(
 
 
 BASS_LUT_VALUES = [
-    0,0,1,1,0,0,1,1,1,1,0,1,0,0,0,1,1,0,0,0,1,0,1,1,
-    0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,1,1,0,1,0,0,0,1,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,1,0,1,0,0,0,1,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,1,1,0,0,0,0,
-    0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0,1,1,0,0,0,0,0,0,
-    0,0,0,0,1,0,0,0,0,0,0,0,1,1,0,1,0,0,0,1,1,0,0,0,
-    1,0,1,1,1,1,0,0,1,1,0,0,
+    0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0,
+    1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1,
+    0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0,
+    0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0,
+    0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0,
+    0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1
 ]
+
 
 @triton.jit
 def is_changeable_by_neighbors(
@@ -209,12 +210,7 @@ def check_is_changeable_kernel(
     bid = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     valid = bid < BND
 
-    # Boundary coordinates: (batch, height, width).
-    # b = tl.load(bcoords_ptr + 3 * bid, mask=valid, other=0)
-    # h = tl.load(bcoords_ptr + 3 * bid + 1, mask=valid, other=0)
-    # w = tl.load(bcoords_ptr + 3 * bid + 2, mask=valid, other=0)
-    # center_idx = b * H*W + h * W + w
-
+    # Boundary coordinates: (height, width).
     h = tl.load(bcoords_ptr + 2 * bid, mask=valid, other=0)
     w = tl.load(bcoords_ptr + 2 * bid + 1, mask=valid, other=0)
     center_idx = h * W + w
@@ -263,44 +259,30 @@ def check_is_changeable_kernel(
         other=-1,
     )
 
-    # Original my_set = {1, 3, 4, 6}: N, W, E, S.
-    # Each valid candidate must pass the LUT test.
-    check_n = is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7, n1, lut_ptr
+    # Each valid candidate (0 or 1) must pass the LUT test.
+    check_0 = is_changeable_by_neighbors(
+        n0, n1, n2, n3, n4, n5, n6, n7, 0, lut_ptr
     )
-    check_w = is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7, n3, lut_ptr
-    )
-    check_e = is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7, n4, lut_ptr
-    )
-    check_s = is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7, n6, lut_ptr
+    check_1 = is_changeable_by_neighbors(
+        n0, n1, n2, n3, n4, n5, n6, n7, 1, lut_ptr
     )
 
     # Skip candidate neighbors whose label is -1.
-    result = (
-        ((n1 == -1) | check_n)
-        & ((n3 == -1) | check_w)
-        & ((n4 == -1) | check_e)
-        & ((n6 == -1) | check_s)
-    )
-
-    tl.store(ischng_ptr + bid, result.to(tl.int1), mask=valid)
-
+    result = check_0 & check_1
+    tl.store(ischng_ptr + bid, result.to(tl.int32), mask=valid)
 
 def check_is_changeable(
-    labels: torch.Tensor,
-    bcoords: torch.Tensor,
-) -> torch.Tensor:
+    labels: th.Tensor,
+    bcoords: th.Tensor,
+) -> th.Tensor:
 
     assert labels.is_cuda
-    assert labels.dtype == torch.int32
+    assert labels.dtype == th.int32
     assert labels.ndim == 2
     assert labels.is_contiguous()
 
     assert bcoords.is_cuda
-    assert bcoords.dtype == torch.int32
+    assert bcoords.dtype == th.int32
     assert bcoords.ndim == 2
     assert bcoords.shape[1] == 2
     assert bcoords.is_contiguous()
@@ -310,18 +292,17 @@ def check_is_changeable(
     BND = bcoords.shape[0]
 
 
-    ischng = torch.empty(
+    ischng = th.empty(
         (BND,),
-        dtype=torch.bool,
+        dtype=th.int32,
         device=labels.device,
     )
 
-    if BND == 0: return ischng
+    if BND == 0: return ischng.bool()
 
-
-    lut = torch.tensor(
+    lut = th.tensor(
         BASS_LUT_VALUES,
-        dtype=torch.int32,
+        dtype=th.int32,
         device=labels.device,
     )
 
@@ -341,7 +322,7 @@ def check_is_changeable(
         num_warps=4,
     )
 
-    return ischng
+    return ischng.bool()
 
 
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -354,7 +335,7 @@ def check_is_changeable(
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 
 @triton.jit
-def potts_ratio_kernel(
+def log_potts_ratio_kernel(
     lpotts_ptr,
     spix_ptr,
     bcoords_ptr,
@@ -363,15 +344,9 @@ def potts_ratio_kernel(
     W: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
+
     idx = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     valid = idx < BND
-
-    # Boundary coordinates: (batch, height, width).
-    # b = tl.load(bcoords_ptr + 3 * idx, mask=valid, other=0)
-    # h = tl.load(bcoords_ptr + 3 * idx + 1, mask=valid, other=0)
-    # w = tl.load(bcoords_ptr + 3 * idx + 2, mask=valid, other=0)
-    # center_idx = b * H*W + h * W + w
-
     h = tl.load(bcoords_ptr + 2 * idx , mask=valid, other=0)
     w = tl.load(bcoords_ptr + 2 * idx + 1, mask=valid, other=0)
     center_idx = h * W + w
@@ -380,59 +355,71 @@ def potts_ratio_kernel(
     count = tl.full((BLOCK_SIZE,), 0, dtype=tl.int32)
 
     # K = 1: scan the 8 neighbors.
-    for dh in tl.static_range(-1, 2):
-        for dw in tl.static_range(-1, 2):
-            if dh != 0 or dw != 0:
-                hn = h + dh
-                wn = w + dw
+    for dh in tl.static_range(-1, 1+1):
+        for dw in tl.static_range(-1, 1+1):
+            not_center = dh != 0 or dw != 0
 
-                in_bounds = (
-                    valid
-                    & (hn >= 0)
-                    & (hn < H)
-                    & (wn >= 0)
-                    & (wn < W)
-                )
+            hn = h + dh
+            wn = w + dw
 
-                neighbor_idx = b * HW + hn * W + wn
+            in_bounds = (
+                valid
+                & (hn >= 0)
+                & (hn < H)
+                & (wn >= 0)
+                & (wn < W)
+            )
 
-                neighbor = tl.load(
-                    spix_ptr + neighbor_idx,
-                    mask=in_bounds,
-                    other=0,
-                )
+            neighbor_idx = hn * W + wn
+            
+            neighbor = tl.load(
+                spix_ptr + neighbor_idx,
+                mask=in_bounds & not_center,
+                other=0,
+            )
 
-                # Count neighbors whose label differs from center.
-                count += (
-                    in_bounds & (1 - 2*neighbor)
-                ).to(tl.int32)
+            # Count neighbors whose label differs from center.
+            count += tl.where(in_bounds & not_center,1-2*neighbor,0)
+            # if in_bounds & not_center:
+            #     count += 1 - 2*neighbor
 
     tl.store(lpotts_ptr + idx, count, mask=valid)
 
 def log_potts_ratio(
-    spix: torch.Tensor,
-    bcoords: torch.Tensor,
+    spix: th.Tensor,
+    bcoords: th.Tensor,
     K: int = 1,
-) -> torch.Tensor:
+) -> th.Tensor:
     assert spix.is_cuda
-    assert spix.dtype == torch.int32
+    assert spix.dtype == th.int32
     assert spix.ndim == 2
     assert spix.is_contiguous()
 
     assert bcoords.is_cuda
-    assert bcoords.dtype == torch.int32
+    assert bcoords.dtype == th.int32
     assert bcoords.ndim == 2
     assert bcoords.shape[1] == 2
     assert bcoords.is_contiguous()
     assert bcoords.device == spix.device
     assert K == 1
 
-    B, H, W = spix.shape
+    # -- also conv2d, but must be applied to entire image so not really in the "spirit" of sparse refinement --
+    # H,W = spix.shape
+    # ins = th.stack([spix,1-spix],dim=0)[None,:].float()
+    # weight = th.ones((2,1,3,3)).to(spix.device)
+    # weight[:,:,1,1] = 0
+    # outs = th.nn.functional.conv2d(ins.float(),weight,padding='same',groups=2)[0]
+    # lpotts = (outs[1] - outs[0]).ravel()
+    # idx = bcoords[:,0]*W + bcoords[:,1]
+    # return lpotts[idx]
+    # exit()
+
+    H, W = spix.shape
     BND = bcoords.shape[0]
 
-    lpotts = torch.empty(
+    lpotts = th.empty(
         (BND,),
-        dtype=torch.int32,
+        dtype=th.int32,
         device=spix.device,
     )
 
@@ -441,7 +428,7 @@ def log_potts_ratio(
 
     block_size = 128
 
-    count_neq_kernel[(triton.cdiv(BND, block_size),)](
+    log_potts_ratio_kernel[(triton.cdiv(BND, block_size),)](
         lpotts,
         spix,
         bcoords,
@@ -501,8 +488,10 @@ def find_islands_kernel(
     for level in tl.static_range(1, 6):
         count = tl.full((BLOCK_SIZE,), 0, dtype=tl.int32)
 
-        for dh in tl.static_range(-5, 6):
-            for dw in tl.static_range(-5, 6):
+        # for dh in tl.static_range(-5,5+1):
+        #     for dw in tl.static_range(-5,5+1):
+        for dh in tl.static_range(-level, level+1):
+            for dw in tl.static_range(-level, level+1):
 
                 # Only visit the current square's perimeter.
                 on_perimeter = (
@@ -512,8 +501,10 @@ def find_islands_kernel(
 
                 # Ignore offsets outside this perimeter.
                 if on_perimeter:
+
                     h_prop = h_i + dh
                     w_prop = w_i + dw
+                    neigh_idx = h_prop * W + w_prop
 
                     in_bounds = (
                         valid_idx
@@ -523,23 +514,16 @@ def find_islands_kernel(
                         & (w_prop < W)
                     )
 
-                    neigh_idx = (
-                         h_prop * W + w_prop
-                    )
-
                     neigh = tl.load(
                         bmask_ptr + neigh_idx,
                         mask=in_bounds,
-                        other=0,
+                        other=-1,
                     )
 
-                    same = (
-                        in_bounds & (neigh == curr)
-                    )
-
+                    same = in_bounds & on_perimeter & (neigh == curr)
                     count += same.to(tl.int32)
 
-        # Preserve the original C++ condition.
+        # Check if the current level is an island; no one connect out 
         level_is_island = (
             (count <= 1)
             | ((count <= 2) & (level > 1))
@@ -550,23 +534,24 @@ def find_islands_kernel(
     tl.store(
         islands_ptr + idx,
         is_island,
-        mask=valid_idx,
+        mask=valid_idx
     )
 
 
-def find_islands(bmask: torch.Tensor) -> torch.Tensor:
+def find_islands(bmask: th.Tensor) -> th.Tensor:
+
     assert bmask.is_cuda
     assert bmask.ndim == 2
-    assert bmask.dtype == torch.int32
+    assert bmask.dtype == th.int32
     assert bmask.is_contiguous()
 
     H, W = bmask.shape
     size = H * W
 
-    islands = torch.empty(
+    islands = th.zeros(
         (H, W),
         device=bmask.device,
-        dtype=torch.bool,
+        dtype=th.bool,
     )
 
     block_size = 128
@@ -582,8 +567,6 @@ def find_islands(bmask: torch.Tensor) -> torch.Tensor:
     )
 
     return islands
-
-
 
 @triton.jit
 def find_strands_kernel(
@@ -721,19 +704,19 @@ def find_strands_kernel(
     tl.store(strands_ptr + idx, result, mask=valid_idx)
 
 
-def find_strands(bmask: torch.Tensor) -> torch.Tensor:
+def find_strands(bmask: th.Tensor) -> th.Tensor:
     assert bmask.is_cuda
     assert bmask.ndim == 2
-    assert bmask.dtype == torch.int32
+    assert bmask.dtype == th.int32
     assert bmask.is_contiguous()
 
     H, W = bmask.shape
     size = H * W
 
-    strands = torch.empty(
+    strands = th.empty(
         (H, W),
         device=bmask.device,
-        dtype=torch.bool,
+        dtype=th.bool,
     )
 
     block_size = 128
@@ -749,387 +732,6 @@ def find_strands(bmask: torch.Tensor) -> torch.Tensor:
     )
 
     return strands
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# __device__ inline
-# void set_mask_v1(int NW,int N,int NE,int W,
-#               int E,int SW,int S,int SE,
-#               int label, bool* nbrs){
-#   nbrs[0] = (label == NW) || (NW==-1);
-#   nbrs[1] = (label == N)  || (N ==-1);
-#   nbrs[2] = (label == NE) || (NE==-1);
-#   nbrs[3] = (label == W)  || (W ==-1);
-#   nbrs[4] = (label == E)  || (E ==-1);
-#   nbrs[5] = (label == SW) || (SW==-1);
-#   nbrs[6] = (label == S)  || (S ==-1);
-#   nbrs[7] = (label == SE) || (SE==-1);
-#   return;
-# }
-
-
-# __device__ inline bool is_strand(bool* nbrs) {
-#     // Opposite neighbor pairs (8-connected, center excluded):
-#     // Layout:  0 1 2
-#     //          3   4
-#     //          5 6 7
-
-#     // bool pair_diag_tl_br = nbrs[0] && nbrs[7]; // top-left  <-> bottom-right
-#     // bool pair_vert       = nbrs[1] && nbrs[6]; // top       <-> bottom
-#     // bool pair_diag_tr_bl = nbrs[2] && nbrs[5]; // top-right <-> bottom-left
-#     // bool pair_horiz      = nbrs[3] && nbrs[4]; // left      <-> right
-#     // bool pair_horiz_off0 = nbrs[3] && nbrs[2];
-#     // bool pair_horiz_off1 = nbrs[3] && nbrs[7];
-#     // bool pair_horiz_off2 = nbrs[4] && nbrs[0];
-#     // bool pair_horiz_off3 = nbrs[4] && nbrs[5];
-
-#     // "3" and any that are NOT {0,5}
-#     // ANY pair that are not adjacent or on the same axis...
-#     /********
-#              { 0: {1,2,3,5},
-#                1: {0,2},
-#                2: {0,1,4,7},
-#                3: {0,5},
-#                4: {2,7},
-#                5: {0,3,6,7}
-#                6: {5,7}
-#                7: {5,6,2,4},
-#              }
-#     ***************/
-
-#     bool is_strand_b = false;
-
-#     is_strand_b = is_strand_b or (nbrs[0] & nbrs[2]);
-#     is_strand_b = is_strand_b or (nbrs[0] & nbrs[4]);
-#     is_strand_b = is_strand_b or (nbrs[0] & nbrs[5]);
-#     is_strand_b = is_strand_b or (nbrs[0] & nbrs[6]);
-#     is_strand_b = is_strand_b or (nbrs[0] & nbrs[7]);
-
-#     is_strand_b = is_strand_b or (nbrs[1] & nbrs[3]);
-#     is_strand_b = is_strand_b or (nbrs[1] & nbrs[4]);
-#     is_strand_b = is_strand_b or (nbrs[1] & nbrs[5]);
-#     is_strand_b = is_strand_b or (nbrs[1] & nbrs[6]);
-#     is_strand_b = is_strand_b or (nbrs[1] & nbrs[7]);
-
-#     is_strand_b = is_strand_b or (nbrs[2] & nbrs[0]);
-#     is_strand_b = is_strand_b or (nbrs[2] & nbrs[3]);
-#     is_strand_b = is_strand_b or (nbrs[2] & nbrs[5]);
-#     is_strand_b = is_strand_b or (nbrs[2] & nbrs[6]);
-#     is_strand_b = is_strand_b or (nbrs[2] & nbrs[7]);
-
-#     // Layout:  0 1 2
-#     //          3   4
-#     //          5 6 7
-
-#     is_strand_b = is_strand_b or (nbrs[3] & nbrs[1]);
-#     is_strand_b = is_strand_b or (nbrs[3] & nbrs[2]);
-#     is_strand_b = is_strand_b or (nbrs[3] & nbrs[4]);
-#     is_strand_b = is_strand_b or (nbrs[3] & nbrs[6]);
-#     is_strand_b = is_strand_b or (nbrs[3] & nbrs[7]);
-
-#     is_strand_b = is_strand_b or (nbrs[4] & nbrs[0]);
-#     is_strand_b = is_strand_b or (nbrs[4] & nbrs[1]);
-#     is_strand_b = is_strand_b or (nbrs[4] & nbrs[3]);
-#     is_strand_b = is_strand_b or (nbrs[4] & nbrs[5]);
-#     is_strand_b = is_strand_b or (nbrs[4] & nbrs[6]);
-
-#     // Layout:  0 1 2
-#     //          3   4
-#     //          5 6 7
-
-#     is_strand_b = is_strand_b or (nbrs[5] & nbrs[0]);
-#     is_strand_b = is_strand_b or (nbrs[5] & nbrs[1]);
-#     is_strand_b = is_strand_b or (nbrs[5] & nbrs[2]);
-#     is_strand_b = is_strand_b or (nbrs[5] & nbrs[4]);
-#     is_strand_b = is_strand_b or (nbrs[5] & nbrs[7]);
-
-#     is_strand_b = is_strand_b or (nbrs[6] & nbrs[0]);
-#     is_strand_b = is_strand_b or (nbrs[6] & nbrs[1]);
-#     is_strand_b = is_strand_b or (nbrs[6] & nbrs[2]);
-#     is_strand_b = is_strand_b or (nbrs[6] & nbrs[3]);
-#     is_strand_b = is_strand_b or (nbrs[6] & nbrs[4]);
-
-#     is_strand_b = is_strand_b or (nbrs[7] & nbrs[0]);
-#     is_strand_b = is_strand_b or (nbrs[7] & nbrs[1]);
-#     is_strand_b = is_strand_b or (nbrs[7] & nbrs[2]);
-#     is_strand_b = is_strand_b or (nbrs[7] & nbrs[3]);
-#     is_strand_b = is_strand_b or (nbrs[7] & nbrs[5]);
-  
-#     // bool is_strand;
-#     // skips = {
-#     //          {1,2,3,5},
-#     //          {0,2},
-#     //          {0,1,4,7},
-#     //          {0,5},
-#     //          {2,7},
-#     //          {0,3,6,7},
-#     //          {5,7},
-#     //          {5,6,2,4}
-#     // };
-#     // for (int idx = 0; idx < 8; idx++){
-#     //   for (int elem=0; elemskips[idx]
-#     // }
-    
-#     // bool pairs0 = nbrs[0] & 
-
-#     // // Count how many neighbors are active (to detect branching)
-#     int count = 0;
-#     for (int i = 0; i < 8; i++) count += (int)nbrs[i];
-
-#     // // A strand: exactly one line passes through, no extra branches
-#     // bool has_line = pair_diag_tl_br || pair_vert || pair_diag_tr_bl || pair_horiz;
-#     // return (has_line && count == 2) || (count <= 1);
-#     // return (is_strand && count == 2) || (count <= 1);
-#     return (is_strand_b && (count <= 2));
-
-# }
-
-
-
-# static __global__
-# void find_strands_kernel(const int* bmask, bool* strands,
-#                          int B, int H, int W){
-
-#   // -- get index --
-#   int SIZE = B*H*W;
-#   int HW = H*W;
-#   int index = blockIdx.x * blockDim.x + threadIdx.x;
-#   if (index >= SIZE) return;
-
-#   // -- unpack position --
-#   int b_i = index/HW;
-#   int iindex = index%HW;
-#   int h_i = iindex / W;
-#   int w_i = iindex % W;
-#   int neighs[8];
-#   bool mask[8];
-#   int curr_b = bmask[index];
-  
-#   // -- reading all neighboring spix values --
-#   int K = 1;
-#   int curr_ix = 0;
-#   for(int dh=-K; dh<=K; dh++){
-#     for(int dw=-K; dw<=K; dw++){
-
-#       if ((dh==0)&&(dw==0)){ continue; }
-#       int h_prop = h_i + dh;
-#       int w_prop = w_i + dw;
-
-#       bool invalid_h = (h_prop < 0) or (h_prop>=H);
-#       bool invalid_w = (w_prop < 0) or (w_prop>=W);
-#       bool invalid = invalid_h or invalid_w;
-
-#       if (invalid){
-#         neighs[curr_ix] = -1;
-#       }else{
-#         neighs[curr_ix] = bmask[b_i*H*W + h_prop*W + w_prop];
-#       }
-#       curr_ix++;
-#     }
-#   }
-
-#   // -- mark true if its a member of a strand --
-#   set_mask_v1(neighs[0], neighs[1], neighs[2], neighs[3],
-#               neighs[4], neighs[5], neighs[6], neighs[7], curr_b, mask);
-#   strands[index] = is_strand(mask);
-#   // strands[index] = curr_b>0;
-
-# }
-
-
-# torch::Tensor
-# find_strands(torch::Tensor bmask) {
-
-#     // -- check inputs --
-#     CHECK_INPUT(bmask);
-#     int B = bmask.size(0);
-#     int H = bmask.size(1); 
-#     int W = bmask.size(2);
-#     int SIZE = B*H*W;
-
-#     // -- count edges per boundary point --
-#     int nthreads = 512;
-#     int nblocks = (SIZE - 1)/nthreads + 1;
-#     auto opt = torch::dtype(torch::kBool).device(bmask.device());
-#     auto strands = torch::zeros({B,H,W},opt);
-#     find_strands_kernel<<<nblocks, nthreads>>>(bmask.data_ptr<int>(),
-#                                                strands.data_ptr<bool>(),
-#                                                B, H, W);
-#     return strands;
-# }
-
-
-# static __global__
-# void find_islands_kernel(const int* bmask, bool* islands,
-#                          int B, int H, int W){
-
-#   // -- get index --
-#   int SIZE = B*H*W;
-#   int HW = H*W;
-#   int index = blockIdx.x * blockDim.x + threadIdx.x;
-#   if (index >= SIZE) return;
-
-#   // -- unpack position --
-#   int b_i = index/HW;
-#   int iindex = index%HW;
-#   int h_i = iindex / W;
-#   int w_i = iindex % W;
-#   // int neighs[8];
-#   // bool mask[8];
-#   int curr = bmask[index];
-  
-#   // -- reading all neighboring spix values --
-#   // bool exterior_diff_K = true;
-#   // bool exterior_diff_1 = true;
-#   // bool exterior_diff_2 = true;
-#   // int nsame_inner = 0;
-#   // int nsame = 0;
-#   int K = 5;
-
-#   // spiral out from center
-#   bool is_island = false;
-#   int count = 0;
-#   for(int level=1; level<=K; level++){
-
-#     count = 0;
-#     for(int dh=-level; dh<=level; dh++){
-#       for(int dw=-level; dw<=level; dw++){
-
-#         if ((abs(dh)!=level) and (abs(dw)!=level)){ continue; }
-
-#         int h_prop = h_i + dh;
-#         int w_prop = w_i + dw;
-
-#         bool invalid_h = (h_prop < 0) or (h_prop>=H);
-#         bool invalid_w = (w_prop < 0) or (w_prop>=W);
-#         bool invalid = invalid_h or invalid_w;
-#         if (invalid){ continue; }
-        
-#         int neigh = bmask[b_i*H*W + h_prop*W + w_prop];
-#         count += (neigh == curr);
-#       }
-#     }
-
-#     is_island = is_island or ( (count <= 1) or ( (count <= 2) and (level>1) ) );
-    
-#   }
-
-#   // islands[index] = (nsame < 4) or (nsame_inner <= 1) or exterior_diff; // some small-ish number
-#   islands[index] = is_island;
-
-
-#   // for(int dh=-K; dh<=K; dh++){
-#   //   for(int dw=-K; dw<=K; dw++){
-
-#   //     if ((dh==0)&&(dw==0)){ continue; }
-#   //     int h_prop = h_i + dh;
-#   //     int w_prop = w_i + dw;
-
-#   //     bool invalid_h = (h_prop < 0) or (h_prop>=H);
-#   //     bool invalid_w = (w_prop < 0) or (w_prop>=W);
-#   //     bool invalid = invalid_h or invalid_w;
-#   //     if (invalid){ continue; }
-
-#   //     int neigh = bmask[b_i*H*W + h_prop*W + w_prop];
-#   //     nsame += (neigh == curr);
-
-#   //     if ((abs(dh) <= 1) and (abs(dw) <= 1)){
-#   //       nsame_inner += (neigh == curr);
-#   //     }
-
-#   //     if ((abs(dh) == K) and (abs(dw) == K)){
-#   //       exterior_diff_K = exterior_diff_K and (neigh != curr);
-#   //     }
-
-#   //     if ((abs(dh) == 1) and (abs(dw) == 1)){
-#   //       exterior_diff_1 = exterior_diff_1 and (neigh != curr);
-#   //     }
-
-#   //     if ((abs(dh) == 2) and (abs(dw) == 2)){
-#   //       exterior_diff_2 = exterior_diff_2 and (neigh != curr);
-#   //     }
-
-#   //   }
-#   // }
-
-
-#   // -- mark true if its a member of a strand --
-#   // set_mask_v1(neighs[0], neighs[1], neighs[2], neighs[3],
-#   //             neighs[4], neighs[5], neighs[6], neighs[7], curr_b, mask);
-#   // bool exterior_diff = exterior_diff_K or exterior_diff_1 or exterior_diff_2;
-#   // islands[index] = (nsame < 4) or (nsame_inner <= 1) or exterior_diff; // some small-ish number
-
-# }
-
-
-
-# torch::Tensor
-# find_islands(torch::Tensor bmask) {
-
-#     // -- check inputs --
-#     CHECK_INPUT(bmask);
-#     int B = bmask.size(0);
-#     int H = bmask.size(1); 
-#     int W = bmask.size(2);
-#     int SIZE = B*H*W;
-
-#     // -- count edges per boundary point --
-#     int nthreads = 512;
-#     int nblocks = (SIZE - 1)/nthreads + 1;
-#     auto opt = torch::dtype(torch::kBool).device(bmask.device());
-#     auto islands = torch::zeros({B,H,W},opt);
-#     find_islands_kernel<<<nblocks, nthreads>>>(bmask.data_ptr<int>(),
-#                                                islands.data_ptr<bool>(),
-#                                                B, H, W);
-#     return islands;
-# }
-
 
 
 
