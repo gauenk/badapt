@@ -71,8 +71,7 @@ def main():
     cfg.niters_train = 50_000
     cfg.log_every = 50
     cfg.val_every = 500
-    # cfg.ckpt_every = 5000
-    cfg.ckpt_every = 2
+    cfg.ckpt_every = 5000
     cfg.global_step = 0
     cfg.save_root = "training_checkpoints"
 
