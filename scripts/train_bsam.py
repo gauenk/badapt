@@ -24,13 +24,12 @@ def main():
     cfg.local_rank = 0
     cfg.img_mean = th.tensor([0.485, 0.456, 0.406])
     cfg.img_std  = th.tensor([0.229, 0.224, 0.225])
+    cfg.lr = 1e-4
     cfg.niters_train = 100_000
     cfg.log_every = 50
     cfg.val_every = 100
 
-
     bsam = BSAM()
-
     checkpoint = None
     if checkpoint: bsam.load(checkpoint)
 
