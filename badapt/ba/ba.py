@@ -6,12 +6,17 @@ import torch.nn.functional as F
 
 # -- cuda --
 from badapt import _ba_cuda as ba_cuda
-# import badapt._ba_cuda as ba_cuda
 get_boundary = ba_cuda.get_boundary
 check_is_changeable = ba_cuda.check_is_changeable
 log_potts_ratio = ba_cuda.log_potts_ratio
 find_islands = ba_cuda.find_islands
 find_strands = ba_cuda.find_strands
+
+# -- triton [much slower] --
+# from badapt.ba import ba_triton
+# # get_boundary = ba_triton.get_boundary
+# check_is_changeable = ba_triton.check_is_changeable
+
 
 # Algorithm 1
 @th.no_grad()
@@ -20,7 +25,8 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     # defaults and helpers and such...
     if steps is None: steps = [12,9,3]
     if scales is None: scales = [4,2,1]
-    def interp(mask,_H,_W,mode='nearest',thresh=True):
+    def interp(mask,_H,_W,mode='bilinear',thresh=True):
+        if mask.shape == (_H,_W): return mask.contiguous()
         kw = {"align_corners":False} if mode == 'bilinear' else {}
         mask = F.interpolate(mask.float()[None,None], size=(_H,_W), mode=mode, **kw)[0,0]
         if thresh: return (mask > 0.5).int()
@@ -49,7 +55,7 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     # return refined
 
     # -- run refinement loop --
-    refined = coarse.clone()
+    refined = coarse.int().clone()
     for scale, nsteps in zip(scales, steps):
 
         H_s, W_s = H // scale, W // scale
@@ -72,11 +78,11 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
             # manually remove strands and islands
-            if scale == 1 and step == 0: remove_artifacts(refined)
+            # if scale == 1 and step == 0: remove_artifacts(refined)
 
     # ensure native-resolution
-    refined = interp(refined,H,W)
-    remove_artifacts(refined)
+    refined = interp(refined,H,W,'nearest')
+    # remove_artifacts(refined)
 
     return refined
 
@@ -99,6 +105,7 @@ def ba_step(logits, mask, boundary, potts_coeff):
 
         # -- select only changable --
         is_chng = check_is_changeable(mask, query_i)
+        # is_chng = th.ones_like(is_chng)
         query_i = query_i[is_chng].int().contiguous()
         logits_i = logits[sel_i][is_chng]
 
@@ -130,7 +137,7 @@ def oracle_boundary_adaptation(gt,coarse,potts_coeff=0.0,
     seq = [coarse.clone()] if return_seq else None
     if steps is None: steps = [12,9,3]
     if scales is None: scales = [4,2,1]
-    def interp(mask,_H,_W,mode='nearest',thresh=True):
+    def interp(mask,_H,_W,mode='bilinear',thresh=True):
         kw = {"align_corners":False} if mode == 'bilinear' else {}
         mask = F.interpolate(mask.float()[None,None], size=(_H,_W), mode=mode, **kw)[0,0]
         if thresh: return (mask > 0.5).int()
@@ -161,10 +168,10 @@ def oracle_boundary_adaptation(gt,coarse,potts_coeff=0.0,
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
             if scale == 1: remove_artifacts(refined)
-            if return_seq: seq.append(interp(refined,H,W))
+            if return_seq: seq.append(interp(refined,H,W,'nearest'))
 
     # -- ensure native-resolution --
-    refined = interp(refined,H,W)
+    refined = interp(refined,H,W,'nearest')
 
     # -- return --
     if return_seq: return th.stack(seq)

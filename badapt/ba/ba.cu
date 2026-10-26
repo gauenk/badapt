@@ -111,7 +111,17 @@ void set_mask(int NW,int N,int NE,int W,
   nbrs[5] = (label == SW) || (SW==-1);
   nbrs[6] = (label == S)  || (S ==-1);
   nbrs[7] = (label == SE) || (SE==-1);
+
+  // nbrs[0] = (label == NW) ;
+  // nbrs[1] = (label == N)  ;
+  // nbrs[2] = (label == NE) ;
+  // nbrs[3] = (label == W)  ;
+  // nbrs[4] = (label == E)  ;
+  // nbrs[5] = (label == SW) ;
+  // nbrs[6] = (label == S)  ;
+  // nbrs[7] = (label == SE) ;
   return;
+
 }
 
 __device__ const bool bass_lut[256] = {
@@ -126,9 +136,9 @@ __device__ const bool bass_lut[256] = {
 	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0,
 	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
 	       0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0,
-	       0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1};
+	       0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0};
 
-__device__ inline bool ischangeable_by_nbrs(bool* nbrs){
+__device__ inline int ischangeable_by_nbrs(bool* nbrs){
   int num = 0;
   int count_diff = 0;
 #pragma unroll
@@ -138,7 +148,7 @@ __device__ inline bool ischangeable_by_nbrs(bool* nbrs){
       if (nbrs[i]) num++;
       else count_diff++;
    }
-   return bass_lut[num];
+   return num;//bass_lut[num];
 }
 
 static __global__
@@ -176,18 +186,20 @@ void check_is_changeable_k(bool* ischng, const int* mask, const int* query, int 
 
   // -- check 0 and 1 --
   set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4], neighs[5], neighs[6], neighs[7], 0, vec);
-  bool check0 = ischangeable_by_nbrs(vec);
+  int check0 = ischangeable_by_nbrs(vec);
   set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4], neighs[5], neighs[6], neighs[7], 1, vec);
-  bool check1 = ischangeable_by_nbrs(vec);
+  int check1 = ischangeable_by_nbrs(vec);
+  bool is_isolated = ((check0 == 255) and (mask_i == 1)) or ((check1 == 255) and (mask_i==0));
 
   // -- only if a face takes the value can we update to it --
   bool any_zero = (neighs[1]==0) or (neighs[3] == 0) or (neighs[4] == 0) or (neighs[6] == 0);
   bool any_one  = (neighs[1]==1) or (neighs[3] == 1) or (neighs[4] == 1) or (neighs[6] == 1);
 
   // -- assign --
-  bool is_chng = true;
-  is_chng = any_zero ? check0 & is_chng : is_chng;
-  is_chng = any_one  ? check1 & is_chng : is_chng;
+  // bool is_chng = true;
+  is_chng0 = any_zero ? bass_lut[check0] : false;
+  is_chng1 = any_one ? bass_lut[check1] : is_chng;
+  is_chng = is_chng or is_isolated;
 
   ischng[q_index] = is_chng;
 

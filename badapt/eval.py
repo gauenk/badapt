@@ -110,6 +110,9 @@ def eval_refiner(rname,dname,potts,steps,scales):
         record['mIoU-R'].append(miou_refined)
         record['bIoU-C'].append(biou_coarse)
         record['bIoU-R'].append(biou_refined)
+        record['CC-GT'].append(cc_gt)
+        record['CC-C'].append(cc_coarse)
+        record['CC-R'].append(cc_refined)
         record['size'].append((gt>0).float().mean().item())
         record['img_id'].append(img_id)
 

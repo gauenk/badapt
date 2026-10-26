@@ -172,7 +172,7 @@ BASS_LUT_VALUES = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
     0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0,
-    0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1
+    0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0
 ]
 
 @triton.jit
@@ -186,6 +186,15 @@ def is_changeable_by_neighbors(n0, n1, n2, n3, n4, n5, n6, n7, label):
     a5 = (n5 == label) | (n5 == -1)
     a6 = (n6 == label) | (n6 == -1)
     a7 = (n7 == label) | (n7 == -1)
+
+    # a0 = (n0 == label)
+    # a1 = (n1 == label)
+    # a2 = (n2 == label)
+    # a3 = (n3 == label)
+    # a4 = (n4 == label)
+    # a5 = (n5 == label)
+    # a6 = (n6 == label)
+    # a7 = (n7 == label)
 
     num = (
         a0.to(tl.int32) * 128
@@ -204,7 +213,7 @@ def is_changeable_by_neighbors(n0, n1, n2, n3, n4, n5, n6, n7, label):
 def check_is_changeable_kernel(
     ischng_ptr,
     labels_ptr,
-    bcoords_ptr,
+    query_ptr,
     BND: tl.constexpr,
     H: tl.constexpr,
     W: tl.constexpr,
@@ -214,8 +223,8 @@ def check_is_changeable_kernel(
     valid = bid < BND
 
     # Boundary coordinates: (height, width).
-    h = tl.load(bcoords_ptr + 2 * bid, mask=valid, other=0)
-    w = tl.load(bcoords_ptr + 2 * bid + 1, mask=valid, other=0)
+    h = tl.load(query_ptr + 2 * bid, mask=valid, other=0)
+    w = tl.load(query_ptr + 2 * bid + 1, mask=valid, other=0)
     center_idx = h * W + w
     label = tl.load(labels_ptr + center_idx, mask=valid, other=0)
 
@@ -269,7 +278,7 @@ def check_is_changeable_kernel(
     sum_1 = is_changeable_by_neighbors(
         n0, n1, n2, n3, n4, n5, n6, n7, 1
     )
-
+6
     # only update if faces include candidate point
     any_zeros = (n1 == 0) | (n3 == 0) | (n4 == 0) | (n6 == 0)
     sum_0 = tl.where(any_zeros,sum_0,255)
@@ -284,7 +293,7 @@ def check_is_changeable_kernel(
 
 def check_is_changeable(
     labels: th.Tensor,
-    bcoords: th.Tensor,
+    query: th.Tensor,
 ) -> th.Tensor:
 
     assert labels.is_cuda
@@ -292,15 +301,15 @@ def check_is_changeable(
     assert labels.ndim == 2
     assert labels.is_contiguous()
 
-    assert bcoords.is_cuda
-    assert bcoords.dtype == th.int32
-    assert bcoords.ndim == 2
-    assert bcoords.shape[1] == 2
-    assert bcoords.is_contiguous()
-    assert bcoords.device == labels.device
+    assert query.is_cuda
+    assert query.dtype == th.int32
+    assert query.ndim == 2
+    assert query.shape[1] == 2
+    assert query.is_contiguous()
+    assert query.device == labels.device
 
     H, W = labels.shape
-    BND = bcoords.shape[0]
+    BND = query.shape[0]
     if BND == 0: return th.zeros(BND,dtype=th.int32,device=labels.device)
 
     ischng = th.empty((BND,2),dtype=th.int32,device=labels.device)
@@ -312,7 +321,7 @@ def check_is_changeable(
     ](
         ischng,
         labels,
-        bcoords,
+        query,
         BND,
         H,
         W,
@@ -326,7 +335,21 @@ def check_is_changeable(
         device=labels.device,
     )
 
+    # print(ischng)
+    # p0 = query[ischng[:,1]==255]
+    # print(p0)
+    # # h,w = p0[0]
+    # for p in p0:
+    #     h,w = p
+    #     print(labels[max(0,h-1):min(h+2,H-1),max(0,w-1):min(w+2,W-1)])
+    # exit()
+
+    ql = labels[query[:,0],query[:,1]]
+    iso_0 = (ischng[:,0]==255) & (ql == 1)
+    iso_1 = (ischng[:,1]==255) & (ql == 0)
+    any_isolated = th.any(ischng[:,0]==255,dim=-1)
     ischng = th.logical_and(lut[ischng[:,0]],lut[ischng[:,1]])
+    ischng = th.logical_or(ischng,any_isolated)
     return ischng.bool()
 
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
@@ -342,7 +365,7 @@ def check_is_changeable(
 def log_potts_ratio_kernel(
     lpotts_ptr,
     spix_ptr,
-    bcoords_ptr,
+    query_ptr,
     BND: tl.constexpr,
     H: tl.constexpr,
     W: tl.constexpr,
@@ -351,8 +374,8 @@ def log_potts_ratio_kernel(
 
     idx = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     valid = idx < BND
-    h = tl.load(bcoords_ptr + 2 * idx , mask=valid, other=0)
-    w = tl.load(bcoords_ptr + 2 * idx + 1, mask=valid, other=0)
+    h = tl.load(query_ptr + 2 * idx , mask=valid, other=0)
+    w = tl.load(query_ptr + 2 * idx + 1, mask=valid, other=0)
     center_idx = h * W + w
     center = tl.load(spix_ptr + center_idx, mask=valid, other=0)
 
@@ -391,7 +414,7 @@ def log_potts_ratio_kernel(
 
 def log_potts_ratio(
     spix: th.Tensor,
-    bcoords: th.Tensor,
+    query: th.Tensor,
     K: int = 1,
 ) -> th.Tensor:
     assert spix.is_cuda
@@ -399,12 +422,12 @@ def log_potts_ratio(
     assert spix.ndim == 2
     assert spix.is_contiguous()
 
-    assert bcoords.is_cuda
-    assert bcoords.dtype == th.int32
-    assert bcoords.ndim == 2
-    assert bcoords.shape[1] == 2
-    assert bcoords.is_contiguous()
-    assert bcoords.device == spix.device
+    assert query.is_cuda
+    assert query.dtype == th.int32
+    assert query.ndim == 2
+    assert query.shape[1] == 2
+    assert query.is_contiguous()
+    assert query.device == spix.device
     assert K == 1
 
     # -- also conv2d, but must be applied to entire image so not really in the "spirit" of sparse refinement --
@@ -414,12 +437,12 @@ def log_potts_ratio(
     # weight[:,:,1,1] = 0
     # outs = th.nn.functional.conv2d(ins.float(),weight,padding='same',groups=2)[0]
     # lpotts = (outs[1] - outs[0]).ravel()
-    # idx = bcoords[:,0]*W + bcoords[:,1]
+    # idx = query[:,0]*W + query[:,1]
     # return lpotts[idx]
     # exit()
 
     H, W = spix.shape
-    BND = bcoords.shape[0]
+    BND = query.shape[0]
 
     lpotts = th.empty(
         (BND,),
@@ -435,7 +458,7 @@ def log_potts_ratio(
     log_potts_ratio_kernel[(triton.cdiv(BND, block_size),)](
         lpotts,
         spix,
-        bcoords,
+        query,
         BND,
         H,
         W,

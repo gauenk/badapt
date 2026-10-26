@@ -79,7 +79,7 @@ def main():
             if res is None:
                 if rname == 'bsam':
                     res = eval_refiner(rname,dname,0.00,[12,9,3],[4,2,1])
-                    # res = eval_refiner(rname,dname,0.00,[10,],[1,])
+                    # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
                     # res = eval_refiner(rname,dname,0.00,[10,],[1,])
                 elif rname in ['hqsam-refiner','sam-refiner']:
                     res = eval_refiner(rname,dname)
