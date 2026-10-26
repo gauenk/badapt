@@ -124,7 +124,7 @@ def get_boundary(
     if N == 0:
         return labels
 
-    BLOCK_SIZE = 128
+    BLOCK_SIZE = 512
     grid = (triton.cdiv(N, BLOCK_SIZE),)
     get_boundary_kernel[grid](
         labels,
@@ -136,6 +136,7 @@ def get_boundary(
         no_corners,
         no_bkg,
         BLOCK_SIZE,
+        num_warps=BLOCK_SIZE//32,
     )
 
     if ndim == 2: labels = labels[0]
@@ -169,11 +170,8 @@ BASS_LUT_VALUES = [
     0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 1
 ]
 
-
 @triton.jit
-def is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7,
-        label, lut_ptr):
+def is_changeable_by_neighbors(n0, n1, n2, n3, n4, n5, n6, n7, label):
 
     a0 = (n0 == label) | (n0 == -1)
     a1 = (n1 == label) | (n1 == -1)
@@ -195,15 +193,13 @@ def is_changeable_by_neighbors(
         + a7.to(tl.int32)
     )
 
-    return tl.load(lut_ptr + num)
-
+    return num
 
 @triton.jit
 def check_is_changeable_kernel(
     ischng_ptr,
     labels_ptr,
     bcoords_ptr,
-    lut_ptr,
     BND: tl.constexpr,
     H: tl.constexpr,
     W: tl.constexpr,
@@ -262,16 +258,24 @@ def check_is_changeable_kernel(
     )
 
     # Each valid candidate (0 or 1) must pass the LUT test.
-    check_0 = is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7, 0, lut_ptr
+    sum_0 = is_changeable_by_neighbors(
+        n0, n1, n2, n3, n4, n5, n6, n7, 0
     )
-    check_1 = is_changeable_by_neighbors(
-        n0, n1, n2, n3, n4, n5, n6, n7, 1, lut_ptr
+    sum_1 = is_changeable_by_neighbors(
+        n0, n1, n2, n3, n4, n5, n6, n7, 1
     )
 
+    # only update if faces include candidate point
+    any_zeros = (n1 == 0) | (n3 == 0) | (n4 == 0) | (n6 == 0)
+    sum_0 = tl.where(any_zeros,sum_0,255)
+
+    any_ones = (n1 == 1) | (n3 == 1) | (n4 == 1) | (n6 == 1)
+    sum_1 = tl.where(any_ones,sum_1,255)
+
     # Skip candidate neighbors whose label is -1.
-    result = check_0 & check_1
-    tl.store(ischng_ptr + bid, result.to(tl.int32), mask=valid)
+    # result = check_0 & check_1
+    tl.store(ischng_ptr + 2*bid + 0, sum_0.to(tl.int32), mask=valid)
+    tl.store(ischng_ptr + 2*bid + 1, sum_1.to(tl.int32), mask=valid)
 
 def check_is_changeable(
     labels: th.Tensor,
@@ -292,23 +296,11 @@ def check_is_changeable(
 
     H, W = labels.shape
     BND = bcoords.shape[0]
+    if BND == 0: return th.zeros(BND,dtype=th.int32,device=labels.device)
 
+    ischng = th.empty((BND,2),dtype=th.int32,device=labels.device)
 
-    ischng = th.empty(
-        (BND,),
-        dtype=th.int32,
-        device=labels.device,
-    )
-
-    if BND == 0: return ischng.bool()
-
-    lut = th.tensor(
-        BASS_LUT_VALUES,
-        dtype=th.int32,
-        device=labels.device,
-    )
-
-    block_size = 128
+    block_size = 512
 
     check_is_changeable_kernel[
         (triton.cdiv(BND, block_size),)
@@ -316,16 +308,21 @@ def check_is_changeable(
         ischng,
         labels,
         bcoords,
-        lut,
         BND,
         H,
         W,
         block_size,
-        num_warps=4,
+        num_warps=block_size//32,
     )
 
-    return ischng.bool()
+    lut = th.tensor(
+        BASS_LUT_VALUES,
+        dtype=th.bool,
+        device=labels.device,
+    )
 
+    ischng = th.logical_and(lut[ischng[:,0]],lut[ischng[:,1]])
+    return ischng.bool()
 
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
 #
@@ -373,7 +370,7 @@ def log_potts_ratio_kernel(
             )
 
             neighbor_idx = hn * W + wn
-            
+
             neighbor = tl.load(
                 spix_ptr + neighbor_idx,
                 mask=in_bounds & not_center,
@@ -428,7 +425,7 @@ def log_potts_ratio(
     if BND == 0:
         return lpotts
 
-    block_size = 128
+    block_size = 512
 
     log_potts_ratio_kernel[(triton.cdiv(BND, block_size),)](
         lpotts,
@@ -438,7 +435,7 @@ def log_potts_ratio(
         H,
         W,
         block_size,
-        num_warps=4,
+        num_warps=block_size//32,
     )
 
     return lpotts
@@ -453,17 +450,6 @@ def log_potts_ratio(
 #
 #
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-
-
-
-def remove_artifacts(mask):
-
-    strands = find_strands(mask)
-    mask[strands] = 1 - mask[strands]
-        
-    islands = find_islands(mask)
-    mask[islands] = 1 - mask[islands]
-
-    return mask
 
 
 @triton.jit
@@ -556,7 +542,7 @@ def find_islands(bmask: th.Tensor) -> th.Tensor:
         dtype=th.bool,
     )
 
-    block_size = 128
+    block_size = 512
 
     find_islands_kernel[(triton.cdiv(size, block_size),)](
         bmask,
@@ -565,7 +551,7 @@ def find_islands(bmask: th.Tensor) -> th.Tensor:
         W,
         size,
         block_size,
-        num_warps=4,
+        num_warps=block_size//32,
     )
 
     return islands
@@ -721,7 +707,7 @@ def find_strands(bmask: th.Tensor) -> th.Tensor:
         dtype=th.bool,
     )
 
-    block_size = 128
+    block_size = 512
 
     find_strands_kernel[(triton.cdiv(size, block_size),)](
         bmask,
@@ -730,7 +716,7 @@ def find_strands(bmask: th.Tensor) -> th.Tensor:
         W,
         size,
         block_size,
-        num_warps=4,
+        num_warps=block_size//32,
     )
 
     return strands

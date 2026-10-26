@@ -1,15 +1,32 @@
 
+
 import os
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CppExtension
-import torch
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(
     name="badapt",
-    py_modules=["badapt"],
-    install_requires=[],
-    package_dir={"": "."},
     packages=find_packages("."),
-    package_data={'': []},
-    include_package_data=False,
+    ext_modules=[
+        CUDAExtension(
+            name="badapt._ba_cuda",
+            sources=["badapt/ba/ba.cu"],
+            libraries=["cuda", "cublas", "cudadevrt"],
+            extra_compile_args={
+                "cxx": ["-g", "-w", "-O3"],
+                "nvcc": ["-w", "-O3", "--use_fast_math",
+                         "--extended-lambda"],
+            },
+            library_dirs=["bin"],
+        ),
+
+        # CppExtension('bin.perturb_seg_cpp',
+        #     sources=['sclr/csrc/perturb_seg.cpp'],
+        #     extra_compile_args=['-O3', '-w'],
+        # ),
+    ],
+    cmdclass={
+        "build_ext": BuildExtension.with_options(use_ninja=True),
+    },
 )
+

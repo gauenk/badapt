@@ -15,7 +15,6 @@ from segment_anything import sam_model_registry
 from segment_anything.modeling.common import LayerNorm2d
 from badapt.sam.image_encoder import init_image_encoder
 from badapt.sam.mask_decoder_hq import init_mask_decoder
-from badapt.ba import boundary_adaptation
 
 class BSAM(nn.Module):
 
@@ -25,8 +24,8 @@ class BSAM(nn.Module):
         # -- sam base --
         ckpt_fname = "checkpoints/sam_vit_h_4b8939.pth"
         self.sam = {"sam": sam_model_registry["vit_h"](checkpoint=ckpt_fname)}
-        self.sam['sam'].image_encoder = init_image_encoder("checkpoints/sam_hq_vit_h.pth")
-        self.sam['sam'].mask_decoder = init_mask_decoder("checkpoints/sam_hq_vit_h.pth")
+        self.sam['sam'].image_encoder = init_image_encoder("checkpoints/hqsam_vit_h.pth")
+        self.sam['sam'].mask_decoder = init_mask_decoder("checkpoints/hqsam_vit_h.pth")
 
         # -- low-level feature extraction --
         self.stride0 = 8
@@ -82,7 +81,7 @@ class BSAM(nn.Module):
                         break
                 renamed_state[new_k] = v
             self.load_state_dict(renamed_state,strict=True)
-        
+
     def reset(self):
         self.gridI    = None
         self.gridS    = None
@@ -115,7 +114,7 @@ class BSAM(nn.Module):
 
     def mftr_net(self, coarse, refined, scale, HW):
 
-        def _get_patchify_padding(self, imgs):
+        def _get_patchify_padding(imgs):
             stride = self.stride0
             H, W = imgs.shape[-2:]
             pad_h = (stride - H % stride) % stride
@@ -130,9 +129,9 @@ class BSAM(nn.Module):
             mask_native = F.interpolate(
                 mask_s[None, None].float(), size=HW, mode='nearest'
             ).squeeze(1)  # (1, H, W)
-            mask_pad, _ = self._get_patchify_padding(mask_native[:, None].float())
+            mask_pad, _ = _get_patchify_padding(mask_native[:, None].float())
             return proj(mask_pad)  # (1, 32, fH0, fW0)
-    
+
         # -- encode and mix --
         mask_cur_ftrs  = encode_mask(coarse,  self.proj_mask_cur)
         refined_ftrs = encode_mask(refined,  self.proj_mask_prev)
@@ -156,7 +155,7 @@ class BSAM(nn.Module):
             col_seq = (th.arange(fW, device=device).float() * s + (s - 1) / 2.0) / scale
             ret = th.stack(th.meshgrid(row_seq, col_seq, indexing='ij'), dim=-1)
             return ret  # [fH, fW, 2], values in native pixel space
-        
+
         if self.gridI is None: # cached across BA steps
             self.gridI = make_grid(iHW, scale, sI, device=device)
             self.gridS = make_grid(sHW, scale, sS, device=device)
@@ -184,7 +183,7 @@ class BSAM(nn.Module):
 
         # -- get grids ( grid @ ftrs.shape but values @ native-image.shape ) --
         gI, gS, gM = self._get_grids(HW, iHW, sHW, mHW, sI, sS, sM, scale, device)
-        
+
         # -- read pointwise info --
         qM = read_points(fM,gM,1,sM) # mask
         qI = read_points(fI,gI,scale,sI) # image

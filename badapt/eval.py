@@ -5,8 +5,12 @@ import cv2
 import numpy as np
 import torch as th
 
+
+from badapt.ba import boundary_adaptation
+from badapt.bsam import BSAM
+
 # from badapt.sam_refiner import run_sam_refiner
-from badapt.bsam import BSAM,boundary_adaptation
+
 from badapt.data import get_eval_dataset
 from segment_anything import sam_model_registry,SamPredictor
 

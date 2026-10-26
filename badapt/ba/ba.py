@@ -2,7 +2,17 @@
 import math
 import torch as th
 import torch.nn.functional as F
-from badapt.ba_triton import get_boundary,check_is_changeable,log_potts_ratio,remove_artifacts,find_islands,find_strands
+
+# -- cuda --
+import badapt._ba_cuda as ba_cuda
+get_boundary = ba_cuda.get_boundary
+check_is_changeable = ba_cuda.check_is_changeable
+log_potts_ratio = ba_cuda.log_potts_ratio
+find_islands = ba_cuda.find_islands
+find_strands = ba_cuda.find_strands
+
+# -- triton --
+# from badapt.ba.triton import get_boundary,check_is_changeable,log_potts_ratio,find_islands,find_strands
 
 # Algorithm 1
 @th.no_grad()
@@ -46,8 +56,8 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     for scale, nsteps in zip(scales, steps):
 
         H_s, W_s = H // scale, W // scale
-        coarse_s = interp(coarse,H_s,W_s,'bilinear')
-        refined = interp(refined,H_s,W_s,'bilinear')
+        coarse_s = interp(coarse,H_s,W_s,'nearest')
+        refined = interp(refined,H_s,W_s,'nearest')
         iftrs_s = bsam.iftr_net_ms(iftrs,scale)
 
         for step in range(nsteps):
@@ -65,10 +75,11 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
             # manually remove strands and islands
-            if scale == 1: remove_artifacts(refined)
+            if scale == 1 and step == 0: remove_artifacts(refined)
 
     # ensure native-resolution
     refined = interp(refined,H,W)
+    remove_artifacts(refined)
 
     return refined
 
@@ -103,6 +114,17 @@ def ba_step(logits, mask, boundary, potts_coeff):
         mask[bcoords_i[:, 0], bcoords_i[:, 1]] = (logits_i > 0.0).int()
 
     return mask
+
+def remove_artifacts(mask):
+
+    strands = find_strands(mask)
+    mask[strands] = 1 - mask[strands]
+
+    islands = find_islands(mask)
+    mask[islands] = 1 - mask[islands]
+
+    return mask
+
 
 def oracle_boundary_adaptation(gt,coarse,potts_coeff=0.0,
                                steps=None,scales=None,return_seq=False):

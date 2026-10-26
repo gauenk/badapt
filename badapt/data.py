@@ -63,11 +63,11 @@ def get_dataset(names,dset,use_dist=False,nsamples=0,nworkers=2):
 def get_paths_by_name(name,dset):
     if name == "thinobjects":
         if dset == "tr":
-            img_dir = "data/ThinObject5K/images_train"
-            mask_dir = "data/ThinObject5K/masks_train"
+            img_dir = "data/ThinObjects5K/images_train"
+            mask_dir = "data/ThinObjects5K/masks_train"
         else:
-            img_dir = "data/ThinObject5K/images_test"
-            mask_dir = "data/ThinObject5K/masks_test"
+            img_dir = "data/ThinObjects5K/images_test"
+            mask_dir = "data/ThinObjects5K/masks_test"
     else:
         raise KeyError(f"Uknown dataset name [{name}]")
     return img_dir,mask_dir
@@ -78,7 +78,7 @@ class InfiniteDataLoader:
     def __init__(self, data_loader):
         self.data_loader = data_loader
         self.data_iter = iter(data_loader)
-        if not hasattr(self.data_loader.sampler, 'epoch'): 
+        if not hasattr(self.data_loader.sampler, 'epoch'):
             self.data_loader.sampler.epoch = 0
 
     def __iter__(self):
