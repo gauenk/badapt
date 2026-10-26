@@ -35,7 +35,7 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     # -- [dev only]; run hqsam-refiner from here --
     # refined = (th.sum(sftrs*context[:,:,None,None],dim=1)>0).int()[0]
     # refined = interp(refined,1024,1024,'bilinear',thresh=False)
-    # s = 1024/max(H,W)    
+    # s = 1024/max(H,W)
     # sH,sW = int(H*s),int(W*s)
     # refined = refined[...,:sH,:sW]
     # refined = interp(refined,H,W,'bilinear')
@@ -69,7 +69,7 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
 
     # ensure native-resolution
     refined = interp(refined,H,W)
-    
+
     return refined
 
 def ba_step(logits, mask, boundary, potts_coeff):
@@ -104,9 +104,11 @@ def ba_step(logits, mask, boundary, potts_coeff):
 
     return mask
 
-def oracle_boundary_adaptation(gt,image,coarse,potts_coeff=0.0,steps=None,scales=None):
+def oracle_boundary_adaptation(gt,coarse,potts_coeff=0.0,
+                               steps=None,scales=None,return_seq=False):
 
     # -- prepare --
+    seq = [coarse.clone()] if return_seq else None
     if steps is None: steps = [12,9,3]
     if scales is None: scales = [4,2,1]
     def interp(mask,_H,_W,mode='nearest',thresh=True):
@@ -114,8 +116,8 @@ def oracle_boundary_adaptation(gt,image,coarse,potts_coeff=0.0,steps=None,scales
         mask = F.interpolate(mask.float()[None,None], size=(_H,_W), mode=mode, **kw)[0,0]
         if thresh: return (mask > 0.5).int()
         else: return mask
-    device = image.device
-    H, W, C = image.shape
+    device = gt.device
+    H, W = gt.shape
 
     # -- run refinement loop --
     refined = coarse.clone()
@@ -140,11 +142,38 @@ def oracle_boundary_adaptation(gt,image,coarse,potts_coeff=0.0,steps=None,scales
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
             if scale == 1: remove_artifacts(refined)
+            if return_seq: seq.append(interp(refined,H,W))
 
     # -- ensure native-resolution --
     refined = interp(refined,H,W)
-    
-    return refined
 
+    # -- return --
+    if return_seq: return th.stack(seq)
+    else: return refined
+
+
+
+def example():
+    import os
+    import cv2
+    import numpy as np
+    from badapt.deform import deform_mask
+
+    print("[%d] Running refinement example."%os.getpid())
+
+    gt = np.zeros((256, 256), dtype=np.uint8)
+    cv2.circle(gt, (128, 128), 60, 255, -1)
+    cv2.rectangle(gt, (50, 50), (100, 100), 255, -1)
+    gt = th.from_numpy(gt>0).int().cuda()
+    coarse = deform_mask(gt)
+    seq = oracle_boundary_adaptation(gt,coarse,return_seq=True)
+
+    print("Saved:")
+    for ix,mask in enumerate(seq):
+        cv2.imwrite("mask_%d.png"%ix, mask.cpu().numpy().astype(np.uint8)*255)
+        print("  mask_%d.png"%ix)
+
+if __name__ == "__main__":
+    example()
 
 

@@ -1,3 +1,4 @@
+*.png
 *.egg-info
 *txt
 scripts/_spixconv*

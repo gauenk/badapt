@@ -16,6 +16,7 @@ import torch as th
 #     Load and compile C++ implementation
 # ------------------------------------------------------------
 
+
 HERE = Path(__file__).resolve().parent
 
 cppyy.add_include_path(str(HERE))
@@ -30,7 +31,7 @@ cppyy.cppdef(
 # ------------------------------------------------------------
 
 def deform_mask(mask, regional_sample_rate=0.1, sample_rate=0.1, iou_target = 0.90, allow_perturb=True, seed=None):
-    
+
     move_rate = 0.0
     device = 'cpu'
     if th.is_tensor(mask):
@@ -46,7 +47,7 @@ def deform_mask(mask, regional_sample_rate=0.1, sample_rate=0.1, iou_target = 0.
     modified_contours = deform_contours(
         list(contours), float(regional_sample_rate), float(sample_rate), float(move_rate), seed
     )
-        
+
     gt = np.copy(mask)
     mask = np.zeros((mask.shape[0], mask.shape[1], 3))
     modified_contours = [cont for cont in modified_contours if len(cont) > 0]
