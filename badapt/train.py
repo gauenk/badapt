@@ -8,6 +8,10 @@ import torch.nn.functional as F
 from badapt.deform import deform_mask
 from badapt.ba import get_boundary,ba_step
 
+import time
+from datetime import datetime
+from tqdm.auto import tqdm
+
 # ---------------------------------------
 #
 #
@@ -16,31 +20,165 @@ from badapt.ba import get_boundary,ba_step
 #
 # ---------------------------------------
 
-def launch_training(cfg,bsam,optim,tr_data,val_data):
 
-    # -=-=- init -=-=-=-
-    tr_log = {str(s): {"loss":0., "corr":0, "total":0, "count":0} for s in cfg.scales}
-    cfg.device   = f"cuda:{cfg.local_rank}"
+def launch_training(cfg, bsam, optim, tr_data, val_data):
+
+    # -=-=- init -=-=-
+    tr_log = {
+        str(s): {"loss": 0., "corr": 0, "total": 0, "count": 0}
+        for s in cfg.scales
+    }
+    cfg.device = f"cuda:{cfg.local_rank}"
+
+    is_main = cfg.local_rank == 0
+    start_time = time.perf_counter()
+    last_val_time = None
+    last_ckpt_time = None
+
+    if is_main:
+        log_msg("=" * 65)
+        log_msg(f"Training started | iterations={cfg.niters_train}")
+        log_msg(f"Scales={cfg.scales} | Steps={cfg.steps}")
+        log_msg(
+            f"Validation every {cfg.val_every} iterations | "
+            f"Checkpoint every {cfg.ckpt_every} steps"
+        )
+        log_msg("=" * 65)
 
     # -=-=- training loop -=-=-
-    for i in range(cfg.niters_train):
+    progress = tqdm(
+        range(cfg.niters_train),
+        desc="Training",
+        unit="iter",
+        dynamic_ncols=True,
+        disable=not is_main,
+    )
 
-        train_step(cfg,bsam,optim,tr_data,tr_log)
+    for i in progress:
+        iter_start = time.perf_counter()
 
+        train_step(cfg, bsam, optim, tr_data, tr_log)
+
+        iter_time = time.perf_counter() - iter_start
+        elapsed = time.perf_counter() - start_time
+
+        # -- validation --
         if i % cfg.val_every == 0:
+            if is_main:
+                log_msg(
+                    f"Validation starting | iter={i + 1}/{cfg.niters_train} "
+                    f"| step={cfg.global_step}"
+                )
+
+            val_start = time.perf_counter()
             val_log = update_val_log({})
             val_iter = iter(val_data)
-            for _ in range(len(val_data)):
-                val_step(cfg,bsam,val_iter,val_log)
-            if cfg.local_rank == 0: print_val_log(val_log)
 
-        if (cfg.global_step % cfg.log_every == 0) and (cfg.local_rank == 0):
-            print_train_log(tr_log,cfg.global_step)
+            val_progress = tqdm(
+                range(len(val_data)),
+                desc="Validation",
+                unit="batch",
+                leave=False,
+                dynamic_ncols=True,
+                disable=not is_main,
+            )
 
-        if (cfg.global_step % cfg.ckpt_every == 0) and (cfg.local_rank == 0):
-            save_checkpoint(cfg,bsam,optim)
+            for _ in val_progress:
+                val_step(cfg, bsam, val_iter, val_log)
+
+            val_duration = time.perf_counter() - val_start
+            last_val_time = time.perf_counter()
+
+            if is_main:
+                log_msg(
+                    f"Validation complete | "
+                    f"{format_time(val_duration)} | "
+                    f"{len(val_data)} batches"
+                )
+                print_val_log(val_log)
+
+        # -- training statistics --
+        if (
+            cfg.global_step % cfg.log_every == 0
+            and is_main
+        ):
+            print_train_log(tr_log, cfg.global_step)
+
+        # -- checkpoint --
+        if (
+            cfg.global_step % cfg.ckpt_every == 0
+            and is_main
+        ):
+            ckpt_start = time.perf_counter()
+            log_msg(f"Saving checkpoint | step={cfg.global_step}")
+
+            save_checkpoint(cfg, bsam, optim)
+
+            ckpt_duration = time.perf_counter() - ckpt_start
+            last_ckpt_time = time.perf_counter()
+
+            log_msg(
+                f"Checkpoint complete | "
+                f"{format_time(ckpt_duration)}"
+            )
+
+        # -- update training progress --
+        if is_main:
+            avg_iter_time = elapsed / max(i + 1, 1)
+            remaining_iters = cfg.niters_train - (i + 1)
+            eta = remaining_iters * avg_iter_time
+
+            # Iterations until the next scheduled event.
+            next_val = cfg.val_every - ((i + 1) % cfg.val_every)
+            next_ckpt = cfg.ckpt_every - (
+                cfg.global_step % cfg.ckpt_every
+            )
+
+            progress.set_postfix({
+                "step": cfg.global_step,
+                "iter_s": f"{iter_time:.2f}",
+                "elapsed": format_time(elapsed),
+                "ETA": format_time(eta),
+                "val_in": next_val,
+                "ckpt_in": next_ckpt,
+            })
+
+    if is_main:
+        log_msg("=" * 65)
+        log_msg(
+            f"Training finished | steps={cfg.global_step} | "
+            f"total time={format_time(time.perf_counter() - start_time)}"
+        )
+        log_msg("=" * 65)
 
     return
+
+
+# def _launch_training(cfg,bsam,optim,tr_data,val_data):
+
+#     # -=-=- init -=-=-=-
+#     tr_log = {str(s): {"loss":0., "corr":0, "total":0, "count":0} for s in cfg.scales}
+#     cfg.device   = f"cuda:{cfg.local_rank}"
+
+#     # -=-=- training loop -=-=-
+#     for i in range(cfg.niters_train):
+
+#         train_step(cfg,bsam,optim,tr_data,tr_log)
+
+#         if i % cfg.val_every == 0:
+#             val_log = update_val_log({})
+#             val_iter = iter(val_data)
+#             for _ in range(len(val_data)):
+#                 val_step(cfg,bsam,val_iter,val_log)
+#             if cfg.local_rank == 0: print_val_log(val_log)
+
+#         if (cfg.global_step % cfg.log_every == 0) and (cfg.local_rank == 0):
+#             print_train_log(tr_log,cfg.global_step)
+
+#         if (cfg.global_step % cfg.ckpt_every == 0) and (cfg.local_rank == 0):
+#             save_checkpoint(cfg,bsam,optim)
+
+#     return
 
 def print_train_log(stats,global_step):
 
@@ -55,25 +193,37 @@ def print_train_log(stats,global_step):
         parts.append(f"x{scale}[loss={avg_loss:.3f} acc={acc:.3f}]")
 
     # -=-=- actually print it -=-=-
-    print(f"[step {global_step}]  " + "  ".join(parts))
+    # print(f"[step {global_step}]  " + "  ".join(parts))
+    log_msg(f"[step {global_step}] " + "  ".join(parts))
 
     # -=-= reset -=-=-
     for s in scales:
         stats[s] = {"loss":0., "corr":0, "total":0, "count":0}
 
-def save_checkpoint(cfg,bsam,optim):
+
+def save_checkpoint(cfg, bsam, optim):
     ckpt_path = (
         cfg.save_root /
         f"checkpoint_{cfg.dname}_{cfg.model_name}_{cfg.global_step}.pt"
     )
+
     bsam_state = (
-        bsam.module.state_dict() if cfg.use_dist else bsam.state_dict()
+        bsam.module.state_dict()
+        if cfg.use_dist
+        else bsam.state_dict()
     )
+
     th.save(
-        {"step": cfg.global_step, "epoch": cfg.epoch,"model_state": bsam_state},
+        {
+            "step": cfg.global_step,
+            "epoch": cfg.epoch,
+            "model_state": bsam_state,
+        },
         ckpt_path,
     )
-    print(f"[checkpoint] saved to {ckpt_path}")
+
+    log_msg(f"Checkpoint saved | {ckpt_path}")
+
 
 
 # ---------------------------------------
@@ -183,7 +333,7 @@ def ba_step_tr(logits, refined, bndy, potts, gt_s, scale, global_step):
         new_mask = refined.clone()
         new_mask[bndy] = gt_s[bndy]
     else:
-        new_mask = ba_step(logits, refined.int(), bndy, potts).float()
+        new_mask = ba_step(logits, refined.int(), bndy, potts)
     return new_mask.detach()
 
 def get_training_boundary(mask,aux_points='thicc'):
@@ -347,8 +497,8 @@ def val_step(cfg, bsam, data, log):
             n1      = (gt_B == 1).sum().item()
             corr0   = ((preds == gt_B)[gt_B == 0]).sum().item()
             corr1   = ((preds == gt_B)[gt_B == 1]).sum().item()
-            acc0    = corr0 / max(n0, 1)
-            acc1    = corr1 / max(n1, 1)
+            acc0    = corr0 / max(n0, 1) * 100
+            acc1    = corr1 / max(n1, 1) * 100
 
             # -=-=-=- update masks -=-=-=-
             refined = ba_step(logits,refined,bndy,cfg.potts)
@@ -389,7 +539,8 @@ def print_val_log(record):
     with pd.option_context('display.max_rows', None,
                            'display.max_columns', None,
                            'display.width', None):
-        print(grouped.round(4))
+        tqdm.write(grouped.round(4).to_string())
+        # print(grouped.round(4))
 
 
 
@@ -408,6 +559,24 @@ def interp(mask,_H,_W,mode='nearest',thresh=True):
     kw = {"align_corners":False} if mode == 'bilinear' else {}
     mask = F.interpolate(mask.float()[None,None], size=(_H,_W), mode=mode, **kw)[0,0]
     if thresh: return (mask > 0.5).int()
+    else: return mask
+
+def log_msg(message):
+    """Timestamped messages that don't break tqdm progress bars."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    tqdm.write(f"[{timestamp}] {message}")
+
+def format_time(seconds):
+    """Format seconds as a compact human-readable duration."""
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+
+    if hours:
+        return f"{hours}h {minutes:02d}m {seconds:02d}s"
+    if minutes:
+        return f"{minutes}m {seconds:02d}s"
+    return f"{seconds}s"
 
 def compute_iou(pred, anno):
     """Compute IoU for each class"""
