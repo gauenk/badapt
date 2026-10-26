@@ -19,7 +19,7 @@ from badapt.ba import boundary_adaptation
 
 class BSAM(nn.Module):
 
-    def __init__(self,checkpoint_fname,samhq=True):
+    def __init__(self,checkpoint_fname=None,samhq=True):
         super().__init__()
 
         # -- sam base --
@@ -69,18 +69,19 @@ class BSAM(nn.Module):
         self.reset()
 
         # -- load bsam checkpoint --
-        state = th.load(checkpoint_fname)['model_state']
-        translate = {"NarrativeImNet":"PointwiseNet","coord_encoder":"pos_encoder",
-                     "ftrs0_proj":"iftr_net","FourierCoordEncoder_v2":"FourierCoordEncoder"}
-        renamed_state = {}
-        for old_k,v in state.items():
-            new_k = old_k
-            for old_str,new_str in translate.items():
-                if old_str in old_k:
-                    new_k = old_k.replace(old_str,new_str)
-                    break
-            renamed_state[new_k] = v
-        self.load_state_dict(renamed_state,strict=True)
+        if checkpoint_fname:
+            state = th.load(checkpoint_fname)['model_state']
+            translate = {"NarrativeImNet":"PointwiseNet","coord_encoder":"pos_encoder",
+                         "ftrs0_proj":"iftr_net","FourierCoordEncoder_v2":"FourierCoordEncoder"}
+            renamed_state = {}
+            for old_k,v in state.items():
+                new_k = old_k
+                for old_str,new_str in translate.items():
+                    if old_str in old_k:
+                        new_k = old_k.replace(old_str,new_str)
+                        break
+                renamed_state[new_k] = v
+            self.load_state_dict(renamed_state,strict=True)
         
     def reset(self):
         self.gridI    = None

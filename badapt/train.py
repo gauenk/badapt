@@ -5,7 +5,7 @@ import torch as th
 import pandas as pd
 
 from badapt.deform import deform_mask
-from badapt.ba import get_boundary,ba_step,oracle_ba_step
+from badapt.ba import get_boundary,ba_step
 
 # ---------------------------------------
 #
@@ -20,18 +20,17 @@ def launch_training(cfg,bsam,optim,tr_data,val_data):
     # -=-=- init -=-=-=-
     tr_log = {str(s): {"loss":0., "corr":0, "total":0, "count":0} for s in cfg.scales}
     cfg.device   = f"cuda:{cfg.local_rank}"
-    cfg.img_mean = cfg.img_mean.to(cfg.device) # marked for deleting...
-    cfg.img_std  = cfg.img_std.to(cfg.device)
 
     # -=-=- training loop -=-=-
     for i in range(cfg.niters_train):
 
+        print(i)
         train_step(cfg,bsam,optim,tr_data,tr_log)
 
         if i % cfg.val_every == 0:
             val_log = update_val_log([])
             val_step(cfg,bsam,val_data,val_log)
-            print_val_log(val_log)
+            if cfg.local_rank == 0: print_val_log(val_log)
 
         if (cfg.global_step % cfg.log_every == 0) and (cfg.local_rank == 0):
             print_train_log(tr_log,cfg.global_step)
@@ -89,10 +88,12 @@ def train_step(cfg,bsam,optim,data,log):
     batch = next(data, None)
     if batch is None: return True
     image  = batch['image'].cuda(non_blocking=True)
-    # image = (image/255.0 - cfg.img_mean[None, None, None, :]) / cfg.img_std[None, None, None, :]
+    assert(image.shape[0] == 1) # batch size one for this project
+    image = image[0]
     gt = (batch['label'][0].round() > 128.0).int()
     if gt.shape[0] == 0: return False
     assert(gt.shape[0] == 1)
+    gt = gt[0]
     H, W, C = image.shape
     device = image.device
  
@@ -104,7 +105,7 @@ def train_step(cfg,bsam,optim,data,log):
     bsam.train()
     if hasattr(bsam, 'reset'): bsam.reset()
     else: bsam.module.reset()
-    with torch.no_grad():
+    with th.no_grad():
         iftrs_raw,sftrs,context = bsam.get_sam_features(image,coarse)
 
     # -=-=- steps/scales -=-=-=-
@@ -129,7 +130,7 @@ def train_step(cfg,bsam,optim,data,log):
             logits = bsam(aux, iftrs, sftrs, mftrs, context, (H,W) )
 
             # update
-            with torch.no_grad():
+            with th.no_grad():
                 refined = ba_step_tr(logits_B.detach(),bndy,refined,gt_s,scale,cfg.global_step,cfg.potts)
 
             # loss function (Eq 2)
@@ -156,7 +157,7 @@ def train_step(cfg,bsam,optim,data,log):
             total_loss += loss.detach()
 
             # loggin
-            with torch.no_grad():
+            with th.no_grad():
                 preds_BR      = (logits.detach() > 0).float()
                 gt_BR     = gt_s[aux].float()
                 key = str(scale)
@@ -178,7 +179,7 @@ def ba_step_tr(logits, bndy, refined, gt_s, scale, global_step, potts):
     scale_factor = {4: 2.0, 2: 1.5, 1: 1.0}.get(scale, 1.0)
     p_teacher = max(0.0, 1.0 - global_step / (warmup_steps * scale_factor))
     p_teacher = max(0.1,p_teacher) # set a floor
-    use_gt = (torch.rand(1).item() < p_teacher)
+    use_gt = (th.rand(1).item() < p_teacher)
     if use_gt:
         new_mask = refined.clone()
         new_mask[0][bndy[0]] = gt_s[0][bndy[0]].float()
@@ -249,8 +250,7 @@ def val_step(cfg, bsam, data, log):
     # -=-=- get (image, mask) pair -=-=-
     batch = next(data, None)
     if batch is None: return True
-    image  = (batch['image'] / 255.0).cuda(non_blocking=True)
-    image = (image - cfg.img_mean[None, None, None, :]) / cfg.img_std[None, None, None, :]
+    image  = batch['image'].cuda(non_blocking=True)
     gt = (batch['label'][0].round() > 128.0).int()
     if gt.shape[0] == 0: return False
     assert(gt.shape[0] == 1)
@@ -311,8 +311,9 @@ def val_step(cfg, bsam, data, log):
             acc1    = corr1 / max(n1, 1)
 
             # -=-=-=- update masks -=-=-=-
-            refined = ba_step(logits,refined,boundary,potts)
-            oracle = oracle_ba_step(oracle,gt_s,1,potts)
+            refined = ba_step(logits,refined,bndy,potts)
+            oracle_logits = th.logits(gt_s[bndy].clamp(0.01,0.99))
+            oracle = ba_step(oracle_logits,oracle,bndy,potts)
 
             # -=-=-=- compute mask quality -=-=-=-
             refined_up  = interp(refined,H,W)
@@ -323,7 +324,7 @@ def val_step(cfg, bsam, data, log):
 
             # -=-=-=- record -=-=-=-
             update_val_log(log,{"acc0":acc0,"acc1":acc1,
-                                "iou":iou,"d_iou":d_iou,"r_iou",r_iou,
+                                "iou":iou,"d_iou":d_iou,"r_iou":r_iou,
                                 "img_id":img_id,"dn":dname,"scale":scale,"i":step})
             
 

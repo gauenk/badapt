@@ -30,24 +30,17 @@ cppyy.cppdef(
 # ------------------------------------------------------------
 
 def deform_mask(mask, regional_sample_rate=0.1, sample_rate=0.1, iou_target = 0.90, allow_perturb=True, seed=None):
-
     
     move_rate = 0.0
+    device = 'cpu'
     if th.is_tensor(mask):
         device = mask.device
         mask = mask.cpu().numpy()
-    else:
-        device = 'cpu'
-    # original = mask.copy()
     if mask.max() == 1: mask = mask*255
     mask = mask.astype(np.uint8)
 
     # get boundaries
-    if int(cv2.__version__[0]) >= 4:
-        contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-    else:
-        _, contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-
+    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
     if seed is None:
         seed = int(random.randint(0, 2**31 - 1))
     modified_contours = deform_contours(

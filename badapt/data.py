@@ -11,6 +11,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from skimage import io
 from scipy import ndimage
+import random
 
 import torch as th
 from torch.utils.data import (
@@ -22,6 +23,7 @@ from torch.utils.data import (
 )
 from torch.utils.data.distributed import DistributedSampler
 
+import torch.nn.functional as F
 from torchvision import transforms
 from torchvision.transforms.functional import normalize
 
@@ -31,7 +33,7 @@ def get_eval_dataset(name,dset,use_dist=False,nsamples=0):
     ds = SegData(img_dir,mask_dir,name)
     return ds
 
-def get_trainval_dataset(names,dset,use_dist=False,nsamples=0):
+def get_dataset(names,dset,use_dist=False,nsamples=0,nworkers=2):
 
     # -- code switch --
     if names == "frhq":
@@ -39,7 +41,7 @@ def get_trainval_dataset(names,dset,use_dist=False,nsamples=0):
     if isinstance(names,str): names = [names,]
 
     # -- get datasets --
-    xform = transforms.Compose([RandomHFlip(), LargeScaleJitter(resize_tr,randsize=True)]) if dset == 'tr' else None
+    xform = transforms.Compose([RandomHFlip(), LargeScaleJitter(None,randsize=True)]) if dset == 'tr' else None
     combined = []
     for name in names:
         img_dir,mask_dir = get_paths_by_name(name,dset)
@@ -52,7 +54,7 @@ def get_trainval_dataset(names,dset,use_dist=False,nsamples=0):
     elif dset == "tr": sampler = RandomSampler(combined)
     else: sampler = SequentialSampler(combined)
     batch_sampler = th.utils.data.BatchSampler(sampler, 1, drop_last=False)
-    loader = DataLoader(combined, batch_sampler=batch_sampler, num_workers=4)
+    loader = DataLoader(combined, batch_sampler=batch_sampler, num_workers=nworkers)
     if dset == "tr":
         loader = InfiniteDataLoader(loader)
 
@@ -149,13 +151,15 @@ class SegData(Dataset):
             "imidx":       th.tensor([i]),
             "image":       img,
             "label":       mask,
-            "shape":       th.tensor(img.shape[-2:]),
+            "shape":       th.tensor(mask.shape[-2:]),
             "ori_im_path": str(img_path),
             "dname":       self.dname,
         }
 
         if self.transform:
+            sample['image'] = sample['image'].permute(2,0,1)
             sample = self.transform(sample)
+            sample['image'] = sample['image'].permute(1,2,0)
 
         return sample
 
@@ -275,38 +279,37 @@ def create_dataloaders(name_im_gt_list, my_transforms=[], batch_size=1, training
 #     return train_dataloaders, valid_dataloaders, train_datasets, valid_datasets
 
 
-# # ---------------------------------------------------------------------------
-# # Transforms
-# # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Transforms
+# ---------------------------------------------------------------------------
 
-# class RandomHFlip:
-#     def __init__(self, prob=0.5):
-#         self.prob = prob
+class RandomHFlip:
+    def __init__(self, prob=0.5):
+        self.prob = prob
 
-#     def __call__(self, sample):
-#         imidx, image, label, shape = (
-#             sample["imidx"], sample["image"], sample["label"], sample["shape"]
-#         )
-#         if random.random() >= self.prob:
-#             image = th.flip(image, dims=[2])
-#             label = th.flip(label, dims=[2])
-#         return {"imidx": imidx, "image": image, "label": label, "shape": shape}
+    def __call__(self, sample):
+        imidx, image, label, shape = (
+            sample["imidx"], sample["image"], sample["label"], sample["shape"]
+        )
+        if random.random() >= self.prob:
+            image = th.flip(image, dims=[2])
+            label = th.flip(label, dims=[2])
+        return {"imidx": imidx, "image": image, "label": label, "shape": shape}
 
 
-# class Resize:
-#     def __init__(self, size=320):
-#         self.size = [size, size] if isinstance(size, int) else size
+class Resize:
+    def __init__(self, size=320):
+        self.size = [size, size] if isinstance(size, int) else size
 
-#     def __call__(self, sample):
-#         imidx, image, label = sample["imidx"], sample["image"], sample["label"]
-#         image = F.interpolate(image.unsqueeze(0), self.size, mode="bilinear").squeeze(0)
-#         label = F.interpolate(label.unsqueeze(0), self.size, mode="bilinear").squeeze(0)
-#         rdict = {"imidx": imidx, "image": image, "label": label, "shape": th.tensor(self.size)}
-#         for key, val in sample.items():
-#             if key not in ("imidx", "image", "label", "shape"):
-#                 rdict[key] = val
-#         return rdict
-
+    def __call__(self, sample):
+        imidx, image, label = sample["imidx"], sample["image"], sample["label"]
+        image = F.interpolate(image.unsqueeze(0), self.size, mode="bilinear").squeeze(0)
+        label = F.interpolate(label.unsqueeze(0), self.size, mode="bilinear").squeeze(0)
+        rdict = {"imidx": imidx, "image": image, "label": label, "shape": th.tensor(self.size)}
+        for key, val in sample.items():
+            if key not in ("imidx", "image", "label", "shape"):
+                rdict[key] = val
+        return rdict
 
 # class RandomCrop:
 #     def __init__(self, size=(288, 288)):
@@ -336,85 +339,93 @@ def create_dataloaders(name_im_gt_list, my_transforms=[], batch_size=1, training
 #         return {"imidx": imidx, "image": image, "label": label, "shape": shape}
 
 
-# class LargeScaleJitter:
-#     """
-#     Large scale jitter from copy_paste:
-#     https://github.com/gaopengcuhk/Pretrained-Pix2Seq
-#     """
+class LargeScaleJitter:
+    """
+    Large scale jitter from copy_paste:
+    https://github.com/gaopengcuhk/Pretrained-Pix2Seq
+    """
 
-#     def __init__(self, output_size=2048, aug_scale_min=0.1, aug_scale_max=2.0, randsize=True):
-#         self.desired_size  = None if output_size is None else th.tensor(output_size)
-#         self.aug_scale_min = aug_scale_min
-#         self.aug_scale_max = aug_scale_max
-#         self.randsize = randsize
-#         self.min_size = 256
-#         print(f"[LargeScaleJitter] (desired_size, aug_scale_min, aug_scale_max): "
-#               f"({output_size}, {aug_scale_min}, {aug_scale_max})")
+    def __init__(self, output_size=2048, aug_scale_min=0.1, aug_scale_max=2.0, randsize=True):
+        self.desired_size  = None if output_size is None else th.tensor(output_size)
+        self.aug_scale_min = aug_scale_min
+        self.aug_scale_max = aug_scale_max
+        self.randsize = randsize
+        self.min_size = 256
+        # print(f"[LargeScaleJitter] (desired_size, aug_scale_min, aug_scale_max): "
+        #       f"({output_size}, {aug_scale_min}, {aug_scale_max})")
 
-#     def __call__(self, sample):
-#         imidx, image, label, image_size = (
-#             sample["imidx"], sample["image"], sample["label"], sample["shape"]
-#         )
+    def __call__(self, sample):
+        imidx, image, label, image_size = (
+            sample["imidx"], sample["image"], sample["label"], sample["shape"]
+        )
 
-#         if self.desired_size is None:
-#             desired_size = th.tensor(max(image_size).item())
-#             if desired_size > 5000:
-#                 desired_size = desired_size // 2
-#         else:
-#             desired_size = self.desired_size
+        if self.desired_size is None:
+            desired_size = th.tensor(max(image_size).item())
+            if desired_size > 5000:
+                desired_size = desired_size // 2
+        else:
+            desired_size = self.desired_size
 
-#         min_size = self.min_size
-#         random_scale = th.rand(1) * (self.aug_scale_max - self.aug_scale_min) + self.aug_scale_min
-#         scaled_size  = (random_scale * desired_size).round()
-#         scale        = th.minimum(scaled_size / image_size[0], scaled_size / image_size[1])
-#         scaled_size  = (image_size * scale).round().long()
+        min_size = self.min_size
+        random_scale = th.rand(1) * (self.aug_scale_max - self.aug_scale_min) + self.aug_scale_min
+        scaled_size  = (random_scale * desired_size).round()
+        scale        = th.minimum(scaled_size / image_size[0], scaled_size / image_size[1])
+        scaled_size  = (image_size * scale).round().long()
 
-#         # ── GUARD: never scale below min_size on either dimension ──────────────
-#         if scaled_size[0] < min_size or scaled_size[1] < min_size:
-#             scale       = max(min_size / image_size[0].item(), min_size / image_size[1].item())
-#             scaled_size = (image_size * scale).ceil().long()
+        # print(desired_size)
+        # print(min_size)
+        # print(random_scale)
+        # print(self.aug_scale_max)
+        # print(image_size)
 
-#         scaled_image = F.interpolate(image.unsqueeze(0), scaled_size.tolist(), mode="bilinear").squeeze(0)
-#         scaled_label = F.interpolate(label.unsqueeze(0), scaled_size.tolist(), mode="nearest-exact").squeeze(0)
+        # ── GUARD: never scale below min_size on either dimension ──────────────
+        if scaled_size[0] < min_size or scaled_size[1] < min_size:
+            scale       = max(min_size / image_size[0].item(), min_size / image_size[1].item())
+            scaled_size = (image_size * scale).ceil().long()
 
-#         crop_size = (min(desired_size, scaled_size[0]), min(desired_size, scaled_size[1]))
-#         # ── GUARD: crop_size itself must also respect min_size ─────────────────
-#         crop_size = (
-#             max(crop_size[0], th.tensor(min_size)),
-#             max(crop_size[1], th.tensor(min_size)),
-#         )
-#         margin_h  = max(scaled_size[0] - crop_size[0], 0).item()
-#         margin_w  = max(scaled_size[1] - crop_size[1], 0).item()
+        # print(image.shape)
+        # print(scaled_size)
+        scaled_image = F.interpolate(image.unsqueeze(0), scaled_size.tolist(), mode="bilinear").squeeze(0)
+        scaled_label = F.interpolate(label.unsqueeze(0), scaled_size.tolist(), mode="nearest-exact").squeeze(0)
 
-#         mask_ys, mask_xs = th.where(scaled_label[0] > 0)
-#         if len(mask_ys) == 0:
-#             offset_h = np.random.randint(0, margin_h + 1)
-#             offset_w = np.random.randint(0, margin_w + 1)
-#         else:
-#             cy = mask_ys.float().mean().long().item()
-#             cx = mask_xs.float().mean().long().item()
-#             offset_h = cy - crop_size[0].item() // 2
-#             offset_w = cx - crop_size[1].item() // 2
-#             offset_h += np.random.randint(-crop_size[0].item() // 4, crop_size[0].item() // 4 + 1)
-#             offset_w += np.random.randint(-crop_size[1].item() // 4, crop_size[1].item() // 4 + 1)
-#             offset_h = int(np.clip(offset_h, 0, margin_h))
-#             offset_w = int(np.clip(offset_w, 0, margin_w))
+        crop_size = (min(desired_size, scaled_size[0]), min(desired_size, scaled_size[1]))
+        # ── GUARD: crop_size itself must also respect min_size ─────────────────
+        crop_size = (
+            max(crop_size[0], th.tensor(min_size)),
+            max(crop_size[1], th.tensor(min_size)),
+        )
+        margin_h  = max(scaled_size[0] - crop_size[0], 0).item()
+        margin_w  = max(scaled_size[1] - crop_size[1], 0).item()
 
-#         crop_y1, crop_y2 = offset_h, offset_h + crop_size[0].item()
-#         crop_x1, crop_x2 = offset_w, offset_w + crop_size[1].item()
+        mask_ys, mask_xs = th.where(scaled_label[0] > 0)
+        if len(mask_ys) == 0:
+            offset_h = np.random.randint(0, margin_h + 1)
+            offset_w = np.random.randint(0, margin_w + 1)
+        else:
+            cy = mask_ys.float().mean().long().item()
+            cx = mask_xs.float().mean().long().item()
+            offset_h = cy - crop_size[0].item() // 2
+            offset_w = cx - crop_size[1].item() // 2
+            offset_h += np.random.randint(-crop_size[0].item() // 4, crop_size[0].item() // 4 + 1)
+            offset_w += np.random.randint(-crop_size[1].item() // 4, crop_size[1].item() // 4 + 1)
+            offset_h = int(np.clip(offset_h, 0, margin_h))
+            offset_w = int(np.clip(offset_w, 0, margin_w))
 
-#         image = scaled_image[:, crop_y1:crop_y2, crop_x1:crop_x2]
-#         label = scaled_label[:, crop_y1:crop_y2, crop_x1:crop_x2]
+        crop_y1, crop_y2 = offset_h, offset_h + crop_size[0].item()
+        crop_x1, crop_x2 = offset_w, offset_w + crop_size[1].item()
 
-#         # Pad to exactly desired_size x desired_size
-#         if self.randsize is False:
-#             pad_h = desired_size - image.shape[1]
-#             pad_w = desired_size - image.shape[2]
-#             if pad_h > 0 or pad_w > 0:
-#                 image = F.pad(image, (0, pad_w, 0, pad_h), mode="constant", value=0)
-#                 label = F.pad(label, (0, pad_w, 0, pad_h), mode="constant", value=0)
+        image = scaled_image[:, crop_y1:crop_y2, crop_x1:crop_x2]
+        label = scaled_label[:, crop_y1:crop_y2, crop_x1:crop_x2]
 
-#         return {"imidx": imidx, "image": image, "label": label, "shape": th.tensor(image.shape[-2:])}
+        # Pad to exactly desired_size x desired_size
+        if self.randsize is False:
+            pad_h = desired_size - image.shape[1]
+            pad_w = desired_size - image.shape[2]
+            if pad_h > 0 or pad_w > 0:
+                image = F.pad(image, (0, pad_w, 0, pad_h), mode="constant", value=0)
+                label = F.pad(label, (0, pad_w, 0, pad_h), mode="constant", value=0)
+
+        return {"imidx": imidx, "image": image, "label": label, "shape": th.tensor(image.shape[-2:])}
 
 
 
