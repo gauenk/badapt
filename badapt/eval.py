@@ -29,6 +29,9 @@ def eval_refiner(rname,dname,potts,steps,scales):
     refiner = None
     if rname == "bsam":
         refiner = BSAM("checkpoints/bsam.pt").to(device)
+        refiner.sam['sam'].to(device)
+        # refiner.sam['sam'].image_encoder.to(device)
+        # refiner.sam['sam'].mask_decoder.to(device)
     else:
         hq_mode = 'hq' in rname
         refiner = sam_model_registry["<model_type>"](checkpoint="<path/to/checkpoint>")
@@ -109,7 +112,7 @@ def eval_refiner(rname,dname,potts,steps,scales):
         record['bIoU-R'].append(biou_refined)
         record['size'].append((gt>0).float().mean().item())
         record['img_id'].append(img_id)
-    
+
     return record
 
 

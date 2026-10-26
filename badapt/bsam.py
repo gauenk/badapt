@@ -6,15 +6,21 @@
 
 """
 
+# -- build dat network --
 import torch as th
 from torch import nn
 from einops import rearrange
 import torch.nn.functional as F
-
-from segment_anything import sam_model_registry
 from segment_anything.modeling.common import LayerNorm2d
+
+# -- load-up sam --
+from segment_anything import sam_model_registry
 from badapt.sam.image_encoder import init_image_encoder
 from badapt.sam.mask_decoder_hq import init_mask_decoder
+
+# -- extract sam features --
+from badapt.sam.sam_refiner import sam_input_prepare # lots o' sam-based logic
+from segment_anything.utils.transforms import ResizeLongestSide
 
 class BSAM(nn.Module):
 
@@ -90,7 +96,7 @@ class BSAM(nn.Module):
     @th.no_grad()
     def get_sam_features(self, image, mask):
         with th.no_grad():
-            iftrs_raw,sftrs,context = run_sam(self.sam['sam'], image, mask)
+            iftrs_raw,sftrs,context = get_sam_ftrs(self.sam['sam'], image, mask)
         return iftrs_raw,sftrs,context
 
     def iftr_net_ms(self, iftrs, scale):
@@ -331,10 +337,7 @@ class FourierCoordEncoder(nn.Module):
 
 
 @th.no_grad()
-def run_sam(sam,image,mask):
-
-    from badapt.sam.sam_refiner import sam_input_prepare
-    from segment_anything.utils.transforms import ResizeLongestSide
+def get_sam_ftrs(sam,image,mask):
 
     # -- setup image --
     device = mask.device
@@ -362,6 +365,7 @@ def run_sam(sam,image,mask):
     points = None
     if "point_coords" in image_record:
         points = (image_record["point_coords"], image_record["point_labels"])
+    sam.prompt_encoder.to(device)
     sparse_embeddings, dense_embeddings = sam.prompt_encoder(
         points=points,boxes=image_record.get("boxes", None),
         masks=image_record.get("mask_inputs", None),
@@ -383,13 +387,13 @@ def vizualize_grid_index():
     import matplotlib.pyplot as plt
     import scipy
 
+    # -- config --
     H = 20
     W = 20
-
-    scale = 4 
+    scale = 4
     bndy = th.tensor([(0,0),(1,1),(3,4),]).numpy()
-    query = scale*bndy+(scale-1)/2.0
 
+    # -- init grid --
     res = 8
     nH = res*H
     nW = res*W
@@ -398,15 +402,14 @@ def vizualize_grid_index():
     img = np.zeros((nH,nW))
     plt.imshow(img,'viridis')
 
-
     # -- major points --
     og_bool = np.logical_and(grid[:,0]%res == 0,grid[:,1]%res == 0)
     major_grid = grid[og_bool]
-    print(major_grid[:3]/res)
     _major_grid = grid[og_bool] + res//2
     plt.scatter(_major_grid[:,0],major_grid[:,1],s=20)
 
     # -- highlight nearest grid-point to query --
+    query = scale*bndy+(scale-1)/2.0
     dist = scipy.spatial.distance.cdist(query,grid/(1.0*res))
     inds = np.argmin(dist,axis=1)
     iq = grid[inds]+res//2

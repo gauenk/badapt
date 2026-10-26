@@ -31,8 +31,6 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     # -- be prepared! --
     device = image.device
     H, W, C = image.shape
-    bsam.to(device)
-    bsam.sam['sam'].to(device)
     bsam.eval()
     bsam = unwrap(bsam)
     bsam.reset()
@@ -55,8 +53,8 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     for scale, nsteps in zip(scales, steps):
 
         H_s, W_s = H // scale, W // scale
-        coarse_s = interp(coarse,H_s,W_s,'nearest')
-        refined = interp(refined,H_s,W_s,'nearest')
+        coarse_s = interp(coarse,H_s,W_s,'bilinear')
+        refined = interp(refined,H_s,W_s,'bilinear')
         iftrs_s = bsam.iftr_net_ms(iftrs,scale)
 
         for step in range(nsteps):

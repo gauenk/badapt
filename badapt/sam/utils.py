@@ -66,7 +66,7 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
         image_embeddings_resize = F.interpolate(image_embeddings_resize, size=(ori_h, ori_w), mode='bilinear')
         image_embeddings_resize = image_embeddings_resize.permute(0, 2, 3, 1)
         image_embeddings_resize = image_embeddings_resize / image_embeddings_resize.norm(dim=-1, keepdim=True)
-    
+
     boxes = []
     box_masks = []
     areas = []
@@ -82,31 +82,30 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
         except:
             y1, x1 = 0, 0
             y2, x2 = 0, 0
-        
+
         x1 = max(0, x1)
         y1 = max(0, y1)
         y2 = min(mask.shape[-2] - 1, y2)
         x2 = min(mask.shape[-1] - 1, x2)
-        
+
         box_h = y2 - y1
         box_w = x2 - x1
         final_x1, final_x2, final_y1, final_y2 = x1, x2, y1, y2
         changed = False
-        
+
         if box_h > 0 and box_w > 0 and margin > 0 and ori_h > 0 and ori_w > 0:
             steph = min(box_h * 0.1, 10)
             stepw = min(box_w * 0.1, 10)
-            
-        
+
             query_embed, mask_resize = get_mask_embed(m, image_embeddings)
             query_embed = query_embed / query_embed.norm(dim=-1, keepdim=True)
             sim = image_embeddings_resize @ query_embed.transpose(0, 1)
             sim = sim.squeeze()
             sim = sim > 0.5
             assert len(sim.shape) == 2, (sim.shape, m.shape, x1, x2, y1, y2, image_embeddings_resize.shape, ori_h, ori_w, query_embed.shape, img_path, mask.shape)
-            
+
             temp_x1 = int(x1-stepw)
-            
+
             if temp_x1 > 0 and temp_x1 < x1:
                 context_area = (y2-y1) * (x1-temp_x1)
                 sim_context = sim[y1:y2, temp_x1:x1]
@@ -114,7 +113,7 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
                 if pos_area / context_area > margin:
                     final_x1 = temp_x1
                     changed = True
-                    
+
             temp_x2 = int(x2+stepw)
             if temp_x2 < ori_w and temp_x2 > x2:
                 context_area = (y2-y1) * (temp_x2-x2)
@@ -123,7 +122,7 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
                 if pos_area / context_area > margin:
                     final_x2 = temp_x2
                     changed = True
-                    
+
             temp_y1 = int(y1-steph)
             if temp_y1 > 0 and temp_y1 < y1:
                 context_area = (y1-temp_y1) * (x2-x1)
@@ -132,7 +131,7 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
                 if pos_area / context_area > margin:
                     final_y1 = temp_y1
                     changed = True
-                    
+
             temp_y2 = int(y2+steph)
             if temp_y2 < ori_h and temp_y2 > y2:
                 context_area = (temp_y2-y2) * (x2-x1)
@@ -141,16 +140,16 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
                 if pos_area / context_area > margin:
                     final_y2 = temp_y2
                     changed = True
-                
+
         if changed:
             expand_list.append(1)
         else:
             expand_list.append(0)
-            
+
         x1, x2, y1, y2 = final_x1, final_x2, final_y1, final_y2
         boxes.append(torch.tensor([x1, y1, x2, y2]))
         box_mask = torch.zeros((m.shape[0], m.shape[1])).to(mask.device)
-        
+
         box_mask[y1:y2, x1:x2] = 1
         box_masks.append(box_mask)
         areas.append(1.0*(x2-x1)*(y2-y1))
@@ -164,11 +163,11 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
 
 
 def extract_points(pred_masks, add_neg=True, use_mask=True, gamma=1.0):
-    
+
     point_coords = []
     point_labels = []
     gaus_dt = []
-    
+
     image_pt = torch.ones(pred_masks.shape[-2:]).float().unsqueeze_(0).unsqueeze_(0).to(pred_masks.device)
     v = 1e10
     # lamb = 0.0 (Euclidean) or 1.0 (Geodesic) or (0.0, 1.0) (mixture)
@@ -176,20 +175,20 @@ def extract_points(pred_masks, add_neg=True, use_mask=True, gamma=1.0):
     iterations = 2
     for idx, pred_mask in enumerate(pred_masks):
         h, w = pred_mask.shape
-       
-        
+
+
         #pos point
         pred_mask_dt = FastGeodis.generalised_geodesic2d(
             image_pt, pred_mask.unsqueeze(0).unsqueeze(0), v, lamb, iterations
         )
         pred_mask_dt = pred_mask_dt.squeeze()
-        
-        
+
+
         pred_max_dist = pred_mask_dt.max()
         coords_y, coords_x = torch.where(pred_mask_dt == pred_max_dist)  # coords is [y, x]
         point_coords.append([coords_x[0], coords_y[0]])
         point_labels.append(1)
-        
+
         coord = torch.nonzero(pred_mask)
         y_coord, x_coord = coord[:, 0], coord[:, 1]
         try:
@@ -199,18 +198,18 @@ def extract_points(pred_masks, add_neg=True, use_mask=True, gamma=1.0):
             ymin, xmin = 0, 0
             ymax, xmax = 0, 0
 
-        
+
         box_mask = torch.zeros_like(pred_mask).to(pred_masks.device)
         box_mask[ymin:ymax, xmin:xmax] = 1
-        
+
         if add_neg:
-            pred_mask_rev = pred_mask.clone().detach()
+            pred_mask_rev = pred_mask.clone().detach().to(torch.uint8)
             assert pred_mask_rev.dtype == torch.uint8, "unsuitable data type {}".format(pred_mask_rev.dtype)
             assert pred_mask_rev.device == pred_mask.device
             pred_mask_rev[pred_mask_rev > 0] = 255
             pred_mask_rev = (~pred_mask_rev) / 255
             assert pred_mask_rev.max() <= 1
-            
+
             pred_mask_dt_rev = FastGeodis.generalised_geodesic2d(
                 image_pt, pred_mask_rev.unsqueeze(0).unsqueeze(0), v, lamb, iterations
             )
@@ -220,14 +219,14 @@ def extract_points(pred_masks, add_neg=True, use_mask=True, gamma=1.0):
 
             pred_max_dist_rev = pred_mask_dt_rev.max()
             coords_y_neg, coords_x_neg = torch.where(pred_mask_dt_rev == pred_max_dist_rev)  # coords is [y, x]
-            
+
             point_coords.append([coords_x_neg[0], coords_y_neg[0]])
             point_labels.append(0)
-        
+
         if use_mask:
             pred_mask_dt_copy = pred_mask_dt.clone().detach()
 
-            
+
             boxh, boxw = ymax-ymin, xmax-xmin
             mask_area = pred_mask.sum() / gamma
             mask_area = max(mask_area, 1)
@@ -236,7 +235,7 @@ def extract_points(pred_masks, add_neg=True, use_mask=True, gamma=1.0):
             pred_mask_dt0 = torch.exp(-pred_mask_dt0*pred_mask_dt0/mask_area)
             pred_mask_dt0[pred_mask_dt_copy==0] = 0
             gaus_dt.append(pred_mask_dt0)
-    
+
     point_coords = torch.tensor(point_coords).reshape(len(pred_masks),-1,2).to(pred_masks.device)
     point_labels = torch.tensor(point_labels).reshape(len(pred_masks),-1).to(pred_masks.device)
     if use_mask:
@@ -273,7 +272,7 @@ def extract_mask(pred_masks, gaus_dt, target_size, is01, strength=15, device=0, 
         pred_masks = F.interpolate(
                 pred_masks, (256,256),mode="bilinear", align_corners=False,
             )
-    
+
         gaus_dt = F.pad(gaus_dt, (0, padw, 0, padh), 'constant', 0)
         gaus_dt = F.interpolate(
                     gaus_dt, (256,256),mode="bilinear", align_corners=False,
@@ -297,5 +296,5 @@ def extract_mask(pred_masks, gaus_dt, target_size, is01, strength=15, device=0, 
 
         gaus_dt[gaus_dt<=0] = 1
         pred_masks = pred_masks * gaus_dt
-        
+
     return pred_masks

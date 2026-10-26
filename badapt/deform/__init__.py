@@ -6,7 +6,6 @@ import numpy as np
 import ctypes
 import cv2
 
-
 import random
 import torch as th
 from badapt import _deform_cpp as deform_cpp

@@ -68,6 +68,8 @@ def get_paths_by_name(name,dset):
         else:
             img_dir = "data/ThinObjects5K/images_test"
             mask_dir = "data/ThinObjects5K/masks_test"
+    elif name == "hrsod":
+        pass
     else:
         raise KeyError(f"Uknown dataset name [{name}]")
     return img_dir,mask_dir
@@ -105,7 +107,7 @@ class SegData(Dataset):
     """
 
     def __init__(self, img_dir: Path, mask_dir: Path, dname: str = "na", nsamples: int = 0, allow_multimask: bool = False, transform = None):
-        
+
         self.transform = transform
         self.allow_multimask = allow_multimask
         self.dname = dname
