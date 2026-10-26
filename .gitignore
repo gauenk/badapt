@@ -1,6 +1,7 @@
 *.png
 *.egg-info
 *txt
+checkpoints/
 scripts/_spixconv*
 ./slurm*
 ./reqs/*~
