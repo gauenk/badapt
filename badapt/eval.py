@@ -28,7 +28,8 @@ def eval_refiner(rname,dname,potts,steps,scales):
     device = 'cuda:0'
     refiner = None
     if rname == "bsam":
-        refiner = BSAM("checkpoints/bsam.pt").to(device)
+        # refiner = BSAM("checkpoints/bsam.pt").to(device)
+        refiner = BSAM("checkpoints/bsam_50k.pt").to(device)
         refiner.sam['sam'].to(device)
         # refiner.sam['sam'].image_encoder.to(device)
         # refiner.sam['sam'].mask_decoder.to(device)
@@ -99,6 +100,16 @@ def eval_refiner(rname,dname,potts,steps,scales):
         cc_gt = ndi_label(gt.cpu())[1]
         cc_coarse = ndi_label(coarse.cpu())[1]
         cc_refined = ndi_label(refined.cpu())[1]
+
+        # -- viz example --
+        # if cc_refined > cc_coarse:
+        #     print("Saving examples for image ",img_id)
+        #     import torchvision.utils as tv_utils
+        #     grid = th.stack([gt,coarse,refined])[:,None]*1.0
+        #     print(grid.shape)
+        #     grid = tv_utils.make_grid(grid,nrow=3)
+        #     print(grid.shape)
+        #     tv_utils.save_image(grid,"mask_%d.png"%img_id)
 
         # -=-=-=- summary -=-=-=-=-
         print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f] CC: [%d,%d,%d]" % (img_id,miou_coarse,miou_refined,

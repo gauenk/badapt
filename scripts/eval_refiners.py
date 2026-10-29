@@ -5,6 +5,7 @@
 """
 
 import os
+import math
 import pandas as pd
 from pathlib import Path
 from badapt.eval import eval_refiner
@@ -13,12 +14,11 @@ from badapt.eval import eval_refiner
 def read_cache(root,rname,dname):
     fname = root / ("%s_%s.csv" % (rname,dname))
     if not fname.exists(): return None
-    return pd.read_csv(fname)
+    return pd.read_csv(fname,index_col=None)
 
 def write_cache(res,root,rname,dname):
     fname = root / ("%s_%s.csv" % (rname,dname))
-    res.to_csv(fname)
-
+    res.to_csv(fname,index=False)
 
 # def dev_code():
 
@@ -65,7 +65,8 @@ def main():
     print("[PID: %s] Running Evaluation Script." % (str(os.getpid())))
     # dev_code()
 
-    cache_root = Path("output/eval_cache/")
+    rerun = True
+    cache_root = Path(".")
     # rnames = ['bsam','hqsam-refiner','sam-refiner']
     # dnames = ["thinobjects","big","dis5k","hrsod","uhrsd",]
     rnames = ['bsam',]
@@ -76,13 +77,16 @@ def main():
         for dname in dnames:
 
             res = read_cache(cache_root,rname,dname)
-            if res is None:
+            if res is None or rerun:
                 if rname == 'bsam':
+                    # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
                     res = eval_refiner(rname,dname,0.00,[12,9,3],[4,2,1])
+                    # res = eval_refiner(rname,dname,0.00,[3,6,12],[4,2,1])
                     # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
                     # res = eval_refiner(rname,dname,0.00,[10,],[1,])
                 elif rname in ['hqsam-refiner','sam-refiner']:
                     res = eval_refiner(rname,dname)
+                res = pd.DataFrame(res)
                 write_cache(res,cache_root,rname,dname)
 
             results.append(res)
@@ -90,6 +94,13 @@ def main():
     results = pd.concat(results)
     print(results)
 
+    results = results[results['mIoU-C']>=10]
+    print(results[['mIoU-R','bIoU-R']])
+    stderr = results['mIoU-C'].std()/math.sqrt(len(results))
+    print(results['mIoU-C'].mean(),stderr)
+
+    stderr = results['mIoU-R'].std()/math.sqrt(len(results))
+    print(results['mIoU-R'].mean(),stderr)
 
 if __name__ == "__main__":
     main()

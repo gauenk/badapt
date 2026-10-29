@@ -335,21 +335,13 @@ def check_is_changeable(
         device=labels.device,
     )
 
-    # print(ischng)
-    # p0 = query[ischng[:,1]==255]
-    # print(p0)
-    # # h,w = p0[0]
-    # for p in p0:
-    #     h,w = p
-    #     print(labels[max(0,h-1):min(h+2,H-1),max(0,w-1):min(w+2,W-1)])
-    # exit()
-
     ql = labels[query[:,0],query[:,1]]
     iso_0 = (ischng[:,0]==255) & (ql == 1)
     iso_1 = (ischng[:,1]==255) & (ql == 0)
     any_isolated = th.any(ischng[:,0]==255,dim=-1)
     ischng = th.logical_and(lut[ischng[:,0]],lut[ischng[:,1]])
     ischng = th.logical_or(ischng,any_isolated)
+
     return ischng.bool()
 
 # -=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-

@@ -7,6 +7,7 @@
 """
 
 # -- build dat network --
+import numpy as np
 import torch as th
 from torch import nn
 from einops import rearrange
@@ -347,19 +348,19 @@ def get_sam_ftrs(sam,image,mask):
     # -- prepare image --
     img_size = sam.image_encoder.img_size
     resize = ResizeLongestSide(img_size)
-    image = resize.apply_image(image.cpu().numpy())
+    image = resize.apply_image(image.cpu().numpy().astype(np.uint8))
     image = th.as_tensor(image, device=device)
     image = image.permute(2, 0, 1).contiguous()
 
     # -- run image encoder [slloow] --
-    input_images = sam.preprocess(image)[None,:]
-    enc,iftrs_raw = sam.image_encoder(input_images,return_early_ftrs=True)
+    input_image = sam.preprocess(image)[None,:]
+    enc,iftrs_raw = sam.image_encoder(input_image,return_early_ftrs=True)
     enc = enc.detach()
     iftrs_raw = iftrs_raw.detach()
     iftrs_raw = rearrange(iftrs_raw,'1 h w c -> 1 c h w')
 
     # -- get prompts --
-    image_record = sam_input_prepare(image, mask[None,:], enc[0], resize, gamma=4.0, strength=30)[0]
+    image_record = sam_input_prepare(image, mask[None,:].to(th.uint8), enc[0], resize, gamma=4.0, strength=30)[0]
 
     # -- run mask decoder --
     points = None
@@ -374,7 +375,7 @@ def get_sam_ftrs(sam,image,mask):
     # -- run mask decoder --
     image_pe = sam.prompt_encoder.get_dense_pe()
     fwd = sam.mask_decoder.forward_alt
-    sftrs,context = fwd(enc,image_pe,sparse_embeddings,dense_embeddings,
+    sftrs,context = fwd(enc[0],image_pe,sparse_embeddings,dense_embeddings,
                         multimask_output=False,hq_token_only=True,
                         interm_embeddings=iftrs_raw,return_upscaled_hq=True)
 

@@ -22,30 +22,31 @@ def sam_input_prepare(image, pred_masks, image_embeddings=None, resize_transform
          'image': image,
          'original_size': ori_size,
          }
-    
+
     target_size = image.shape[1:]
     expand_list = torch.zeros((len(pred_masks))).to(image.device)
     if use_box:
         bboxes, box_masks, areas, expand_list = extract_bboxes_expand(image_embeddings, pred_masks, margin=margin)
         input_dict['boxes'] = resize_transform.apply_boxes_torch(bboxes, ori_size)
-    
+
     point_coords, point_labels, gaus_dt = extract_points(pred_masks, add_neg=add_neg, use_mask=use_mask, gamma=gamma)
     if use_point:
         input_dict['og_point_coords'] = point_coords
         input_dict['point_coords'] = resize_transform.apply_coords_torch(point_coords, ori_size)
         input_dict['point_labels'] = point_labels
-        
-    
-        
+
+
+
     if use_mask:
         if target_size_mult != 1:
             target_size = [int(target_size_mult*x) for x in target_size]
+        # print(pred_masks[torch.where(pred_masks>0)],)
         input_dict['mask_inputs'] = extract_mask(pred_masks, gaus_dt, target_size, is01=True, strength=strength, device=image.device, expand_list=expand_list, shrink=shrink_mask)
-   
-    return input_dict,point_coords
-    
 
-def sam_refiner(image_path, 
+    return input_dict,point_coords
+
+
+def sam_refiner(image_path,
                 coarse_masks,
                 sam,
                 resize_transform=None,

@@ -99,32 +99,8 @@ torch::Tensor get_boundary(torch::Tensor mask, int K, bool no_corners) {
 
 **********************************************************************************/
 
-__device__ inline
-void set_mask(int NW,int N,int NE,int W,
-              int E,int SW,int S,int SE,
-              int label, bool* nbrs){
-  nbrs[0] = (label == NW) || (NW==-1);
-  nbrs[1] = (label == N)  || (N ==-1);
-  nbrs[2] = (label == NE) || (NE==-1);
-  nbrs[3] = (label == W)  || (W ==-1);
-  nbrs[4] = (label == E)  || (E ==-1);
-  nbrs[5] = (label == SW) || (SW==-1);
-  nbrs[6] = (label == S)  || (S ==-1);
-  nbrs[7] = (label == SE) || (SE==-1);
 
-  // nbrs[0] = (label == NW) ;
-  // nbrs[1] = (label == N)  ;
-  // nbrs[2] = (label == NE) ;
-  // nbrs[3] = (label == W)  ;
-  // nbrs[4] = (label == E)  ;
-  // nbrs[5] = (label == SW) ;
-  // nbrs[6] = (label == S)  ;
-  // nbrs[7] = (label == SE) ;
-  return;
-
-}
-
-__device__ const bool bass_lut[256] = {
+__device__ const bool simple_point_lut[256] = {
            0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0,
 	       1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1,
 	       0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0,
@@ -148,11 +124,28 @@ __device__ inline int ischangeable_by_nbrs(bool* nbrs){
       if (nbrs[i]) num++;
       else count_diff++;
    }
-   return num;//bass_lut[num];
+   return num;//simple_point_lut[num];
+}
+
+__device__ inline
+void set_mask(int NW,int N,int NE,int W,
+              int E,int SW,int S,int SE,
+              int label, bool oob, bool* nbrs){
+  nbrs[0] = (label == NW) || ((NW==-1) and oob);
+  nbrs[1] = (label == N)  || ((N ==-1) and oob);
+  nbrs[2] = (label == NE) || ((NE==-1) and oob);
+  nbrs[3] = (label == W)  || ((W ==-1) and oob);
+  nbrs[4] = (label == E)  || ((E ==-1) and oob);
+  nbrs[5] = (label == SW) || ((SW==-1) and oob);
+  nbrs[6] = (label == S)  || ((S ==-1) and oob);
+  nbrs[7] = (label == SE) || ((SE==-1) and oob);
+  return;
+
 }
 
 static __global__
-void check_is_changeable_k(bool* ischng, const int* mask, const int* query, int Q, int H, int W){
+void check_is_changeable_k(bool* ischng, const int* mask, const int* query,
+                           int Q, int H, int W, bool oob, bool ensure_bndy){
 
   // -- get index --
   int q_index = blockIdx.x * blockDim.x + threadIdx.x;
@@ -185,9 +178,11 @@ void check_is_changeable_k(bool* ischng, const int* mask, const int* query, int 
   }
 
   // -- check 0 and 1 --
-  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4], neighs[5], neighs[6], neighs[7], 0, vec);
+  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4],
+           neighs[5], neighs[6], neighs[7], 0, oob, vec);
   int check0 = ischangeable_by_nbrs(vec);
-  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4], neighs[5], neighs[6], neighs[7], 1, vec);
+  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4],
+           neighs[5], neighs[6], neighs[7], 1, oob, vec);
   int check1 = ischangeable_by_nbrs(vec);
   bool is_isolated = ((check0 == 255) and (mask_i == 1)) or ((check1 == 255) and (mask_i==0));
 
@@ -196,16 +191,29 @@ void check_is_changeable_k(bool* ischng, const int* mask, const int* query, int 
   bool any_one  = (neighs[1]==1) or (neighs[3] == 1) or (neighs[4] == 1) or (neighs[6] == 1);
 
   // -- assign --
-  // bool is_chng = true;
-  is_chng0 = any_zero ? bass_lut[check0] : false;
-  is_chng1 = any_one ? bass_lut[check1] : is_chng;
-  is_chng = is_chng or is_isolated;
+  bool is_simple0;
+  bool is_simple1 = simple_point_lut[check1];  // we don't care about preserving topology of bkgnd
+  bool is_chng0;
+  bool is_chng1;
+  bool is_chng;
+  if (ensure_bndy){
+    // ? why not is_simple0?... since "1" is marked for removing, then we want to see
+    is_chng0 = (any_zero and (mask_i==1)) ? is_simple1 : false;
+    is_chng1 = (any_one  and (mask_i==0)) ? true : false; // as long as there is a connection
+    is_chng = is_chng0 or is_chng1 or is_isolated;
+  }else{
+    is_simple0 = simple_point_lut[check0];
+    is_chng0 = any_zero ? (is_simple0 or (check0==255)) : true;
+    is_chng1 = any_one  ? (is_simple1 or (check1==255)) : true;
+    is_chng  = (is_chng0 and is_chng1) or is_isolated;
+  }
 
   ischng[q_index] = is_chng;
 
 }
 
-torch::Tensor check_is_changeable(torch::Tensor mask, torch::Tensor query) {
+torch::Tensor check_is_changeable(torch::Tensor mask, torch::Tensor query,
+                                  bool oob, bool ensure_bndy) {
 
     // -- check inputs --
     CHECK_INPUT(mask);
@@ -222,7 +230,8 @@ torch::Tensor check_is_changeable(torch::Tensor mask, torch::Tensor query) {
     auto opt = torch::dtype(torch::kBool).device(mask.device());
     auto ischng = torch::zeros({Q},opt);
     check_is_changeable_k<<<nblocks, nthreads>>>(ischng.data_ptr<bool>(),mask.data_ptr<int>(),
-                                                query.data_ptr<int>(), Q, H, W);
+                                                 query.data_ptr<int>(), Q, H, W,
+                                                 oob, ensure_bndy);
     return ischng;
 
 }
@@ -450,7 +459,7 @@ void find_strands_kernel(const int* bmask, bool* strands, int H, int W){
 
   // -- mark true if its a member of a strand --
   set_mask(neighs[0], neighs[1], neighs[2], neighs[3],
-           neighs[4], neighs[5], neighs[6], neighs[7], curr_b, vec);
+           neighs[4], neighs[5], neighs[6], neighs[7], curr_b, true, vec);
   strands[index] = is_strand(vec);
 }
 
@@ -574,7 +583,8 @@ namespace py = pybind11;
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("get_boundary",&get_boundary,"Bool map of the boundary pixels.",
         py::arg("mask"), py::arg("K")=1, py::arg("no_corners")=true);
-  m.def("check_is_changeable",&check_is_changeable,"Check which query points can be updated.");
+  m.def("check_is_changeable",&check_is_changeable,"Check which query points can be updated.",
+        py::arg("mask"),py::arg("query"),py::arg("oob")=true,py::arg("ensure_bndy")=false);
   m.def("log_potts_ratio",&log_potts_ratio,"Compute the ratio of a log Potts term");
   m.def("find_strands",&find_strands,"Find strands in a binary mask.");
   m.def("find_islands",&find_islands,"Find islands in a binary mask.");

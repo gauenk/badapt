@@ -39,7 +39,7 @@ def init_mask_decoder(ckpt_fname=None):
         L = len('mask_decoder.')
         state = {k[L:]:v for k,v in state.items() if 'mask_decoder.' in k}
         mask_decoder.load_state_dict(state,strict=True)
-    
+
     return mask_decoder
 
 class MaskDecoderHQ(nn.Module):
@@ -102,14 +102,14 @@ class MaskDecoderHQ(nn.Module):
         self.hf_token = nn.Embedding(1, transformer_dim) # HQ-Ouptput-Token
         self.hf_mlp = MLP(transformer_dim, transformer_dim, transformer_dim // 8, 3) # corresponding new MLP layer for HQ-Ouptput-Token
         self.num_mask_tokens = self.num_mask_tokens + 1
-        
+
         # three conv fusion layers for obtaining HQ-Feature
         self.compress_vit_feat = nn.Sequential(
                                         nn.ConvTranspose2d(vit_dim, transformer_dim, kernel_size=2, stride=2),
                                         LayerNorm2d(transformer_dim),
-                                        nn.GELU(), 
+                                        nn.GELU(),
                                         nn.ConvTranspose2d(transformer_dim, transformer_dim // 8, kernel_size=2, stride=2))
-        
+
         self.embedding_encoder = nn.Sequential(
                                         nn.ConvTranspose2d(transformer_dim, transformer_dim // 4, kernel_size=2, stride=2),
                                         LayerNorm2d(transformer_dim // 4),
@@ -135,17 +135,8 @@ class MaskDecoderHQ(nn.Module):
         return_upscaled_hq: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        # vit_features = interm_embeddings[0].permute(0, 3, 1, 2) # early-layer ViT feature, after 1st global attention block in ViT
-        # print(image_embeddings.shape)
-        # print(self.embedding_encoder(image_embeddings).shape)
-        # print(interm_embeddings.shape)
-        # print(self.compress_vit_feat(interm_embeddings).shape)
 
-        # print(self.embedding_encoder(image_embeddings).shape)
-        # print(self.compress_vit_feat(interm_embeddings).shape)
-        # exit()
         hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(interm_embeddings)
-
         up_ftrs, hyper_in = self.predict_masks(
             image_embeddings=image_embeddings,
             image_pe=image_pe,
@@ -234,6 +225,7 @@ class MaskDecoderHQ(nn.Module):
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
+        _src = image_embeddings
         src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
         src = src + dense_prompt_embeddings
         pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
@@ -248,7 +240,8 @@ class MaskDecoderHQ(nn.Module):
         src = src.transpose(1, 2).view(b, c, h, w)
 
         upscaled_embedding_sam = self.output_upscaling(src)
-        upscaled_embedding_hq = self.embedding_maskfeature(upscaled_embedding_sam) + hq_features.repeat(b,1,1,1)
+        hq_features_expanded = hq_features.repeat_interleave(b // hq_features.shape[0], dim=0)
+        upscaled_embedding_hq = self.embedding_maskfeature(upscaled_embedding_sam) + hq_features_expanded
 
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.num_mask_tokens):

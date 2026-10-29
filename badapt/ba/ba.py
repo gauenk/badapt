@@ -12,10 +12,27 @@ log_potts_ratio = ba_cuda.log_potts_ratio
 find_islands = ba_cuda.find_islands
 find_strands = ba_cuda.find_strands
 
+import sclr
+def check_is_changeable(mask,query,oob=True,ensure_bndy=False):
+    query = th.cat([th.zeros_like(query[:,[0]]),query],dim=1)
+    is_chng = sclr.sclr_cuda.check_is_changable_v2(
+        mask[None,:], query.contiguous(), 1
+    )[0].bool()
+    # is_chng = sclr.sclr_cuda.check_is_changable(
+    #     mask[None,:], query.contiguous(), 1
+    # )[0].bool()
+    return is_chng
+
 # -- triton [much slower] --
 # from badapt.ba import ba_triton
 # # get_boundary = ba_triton.get_boundary
 # check_is_changeable = ba_triton.check_is_changeable
+
+# -- .. --
+from sclr.helpers import boundary_update
+from sclr.isr_shared import get_coords
+from sclr.isr_networks_v5p5 import ISRNetV5p5,BoundaryCacheWrapper_v5p5
+from sclr.isr_networks_v5p5 import run_test_ms
 
 
 # Algorithm 1
@@ -54,13 +71,45 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
     # refined = interp(refined,H,W,'bilinear')
     # return refined
 
+    device = image.device
+    IMG_MEAN = th.tensor([0.485, 0.456, 0.406]).to(device)
+    IMG_STD  = th.tensor([0.229, 0.224, 0.225]).to(device)
+    checkpoint_path = "/home/gauenk/Documents/packages/sclr/output/trainval_isr/checkpoint_frhq_isrv5p5-n0_usv0_50000.pt"
+    model_state = th.load(checkpoint_path)['model_state']
+    _bsam = ISRNetV5p5(hf_K=1,hf_freeze_mode="all",nrefiner_iters=1,upscale_version='v0').cuda().eval()
+    _bsam.load_state_dict(model_state, strict=True)
+    imgs = (image[None,:]/255.-IMG_MEAN[None,None,None,:])/IMG_STD[None,None,None,:]
+    bids = th.zeros(1,device=device)
+    # refined = run_test_ms(_bsam,imgs,coarse[None,:],bids,ms_steps=[12,9,3],ms_scales=[4,2,1])[0][0]
+    # return refined
+    sem_enc   = _bsam.sem_encode(imgs, coarse[None,:])
+    _iftrs_raw = sem_enc['early_encoded']
+    _sftrs = sem_enc['ftrs1']
+    ftrs0_base = _bsam.get_ftrs0_base(sem_enc['early_encoded'])
+    fwd = _bsam.forward_at_scale
+
+    # # iftrs = ftrs0_base[None,:]
+    # print(iftrs_raw.shape,_iftrs_raw.shape)
+    # delta = th.mean((iftrs_raw[0] - _iftrs_raw)**2).item()
+    # print("delta: ",delta)
+
+    # print(_sftrs.shape,sftrs.shape)
+    # delta = th.mean((_sftrs - sftrs)**2).item()
+    # print("delta: ",delta)
+
+
+    # # print(iftrs_raw.shape,sftrs.shape)
+    # # print(ftrs1.shape,ftrs0_base.shape,_iftrs0.shape)
+    # exit()
+
+
     # -- run refinement loop --
     refined = coarse.int().clone()
     for scale, nsteps in zip(scales, steps):
 
         H_s, W_s = H // scale, W // scale
-        coarse_s = interp(coarse,H_s,W_s,'bilinear')
-        refined = interp(refined,H_s,W_s,'bilinear')
+        coarse_s = interp(coarse,H_s,W_s,'nearest')
+        refined = interp(refined,H_s,W_s,'nearest')
         iftrs_s = bsam.iftr_net_ms(iftrs,scale)
 
         for step in range(nsteps):
@@ -78,21 +127,21 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             refined = ba_step(logits,refined,bndy,potts_coeff)
 
             # manually remove strands and islands
-            # if scale == 1 and step == 0: remove_artifacts(refined)
+            # if scale == 1:
+            #     if (step % 4 == 0) or (step==nsteps-1): remove_artifacts(refined)
 
     # ensure native-resolution
     refined = interp(refined,H,W,'nearest')
-    # remove_artifacts(refined)
 
     return refined
 
-def ba_step(logits, mask, boundary, potts_coeff):
+def ba_step(logits, mask, bndy, potts_coeff):
 
     # updating new mask
     mask = mask.clone() # contiguous() implied?
-    query = th.stack(th.where(boundary),dim=-1).int()
+    query = th.stack(th.where(bndy),dim=-1).int()
 
-    # Checkerboard coloring to avoid conflicting updates
+    # Checkerboard coloring to avoid race condition
     color = (query[:, 0] % 2) + 2 * (query[:, 1] % 2)
     assert th.all(th.isin(color, th.tensor([0, 1, 2, 3], device=color.device)))
 
@@ -102,16 +151,17 @@ def ba_step(logits, mask, boundary, potts_coeff):
         sel_i = color == i
         if th.sum(sel_i) == 0: continue
         query_i = query[sel_i].contiguous()
+        # print(i,len(query_i))
 
         # -- select only changable --
-        is_chng = check_is_changeable(mask, query_i)
-        # is_chng = th.ones_like(is_chng)
-        query_i = query_i[is_chng].int().contiguous()
+        is_chng = check_is_changeable(mask, query_i, True, False)
+        # is_chng = th.ones_like(is_chng) # dev only
+        query_i = query_i[is_chng]
         logits_i = logits[sel_i][is_chng]
 
         # -- [optional] Boundary Regularization with Potts Term  --
         if potts_coeff > 0:
-            lpotts = log_potts_ratio(mask,query_i)
+            lpotts = log_potts_ratio(mask,query_i.contiguous())
             logits_i = logits_i - potts_coeff*lpotts
 
         # -- write. --
