@@ -100,227 +100,6 @@ torch::Tensor get_boundary(torch::Tensor mask, int K, bool no_corners) {
 **********************************************************************************/
 
 
-__device__ const bool simple_point_lut[256] = {
-           0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0,
-	       1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1,
-	       0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0,
-	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	       0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0,
-	       0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0,
-	       0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0,
-	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
-	       0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0,
-	       0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0};
-
-__device__ inline int ischangeable_by_nbrs(bool* nbrs){
-  int num = 0;
-  int count_diff = 0;
-#pragma unroll
-   for (int i=7; i>=0; i--)
-   {
-      num <<= 1;
-      if (nbrs[i]) num++;
-      else count_diff++;
-   }
-   return num;//simple_point_lut[num];
-}
-
-__device__ inline
-void set_mask(int NW,int N,int NE,int W,
-              int E,int SW,int S,int SE,
-              int label, bool oob, bool* nbrs){
-  nbrs[0] = (label == NW) || ((NW==-1) and oob);
-  nbrs[1] = (label == N)  || ((N ==-1) and oob);
-  nbrs[2] = (label == NE) || ((NE==-1) and oob);
-  nbrs[3] = (label == W)  || ((W ==-1) and oob);
-  nbrs[4] = (label == E)  || ((E ==-1) and oob);
-  nbrs[5] = (label == SW) || ((SW==-1) and oob);
-  nbrs[6] = (label == S)  || ((S ==-1) and oob);
-  nbrs[7] = (label == SE) || ((SE==-1) and oob);
-  return;
-
-}
-
-static __global__
-void check_is_changeable_k(bool* ischng, const int* mask, const int* query,
-                           int Q, int H, int W, bool oob, bool ensure_bndy){
-
-  // -- get index --
-  int q_index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (q_index >= Q) return;
-
-  // -- unpack position --
-  int h_i = query[2*q_index+0];
-  int w_i = query[2*q_index+1];
-  int mask_i = mask[h_i*W + w_i];
-  int neighs[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
-  bool vec[8];
-
-  // -- reading all neighboring mask values --
-  int ix = 0;
-  for(int dh=-1; dh<=1; dh++){
-    for(int dw=-1; dw<=1; dw++){
-      if ((dh==0)&&(dw==0)){ continue; }
-      int h_prop = h_i + dh;
-      int w_prop = w_i + dw;
-      bool invalid_h = (h_prop < 0) or (h_prop>=H);
-      bool invalid_w = (w_prop < 0) or (w_prop>=W);
-      bool invalid = invalid_h or invalid_w;
-      if (invalid){
-        neighs[ix] = -1;
-      }else{
-        neighs[ix] = mask[h_prop*W + w_prop];
-      }
-      ix++;
-    }
-  }
-
-  // -- check 0 and 1 --
-  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4],
-           neighs[5], neighs[6], neighs[7], 0, oob, vec);
-  int check0 = ischangeable_by_nbrs(vec);
-  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4],
-           neighs[5], neighs[6], neighs[7], 1, oob, vec);
-  int check1 = ischangeable_by_nbrs(vec);
-  bool is_isolated = ((check0 == 255) and (mask_i == 1)) or ((check1 == 255) and (mask_i==0));
-
-  // -- only if a face takes the value can we update to it --
-  bool any_zero = (neighs[1]==0) or (neighs[3] == 0) or (neighs[4] == 0) or (neighs[6] == 0);
-  bool any_one  = (neighs[1]==1) or (neighs[3] == 1) or (neighs[4] == 1) or (neighs[6] == 1);
-
-  // -- assign --
-  bool is_simple0;
-  bool is_simple1 = simple_point_lut[check1];  // we don't care about preserving topology of bkgnd
-  bool is_chng0;
-  bool is_chng1;
-  bool is_chng;
-  if (ensure_bndy){
-    // ? why not is_simple0?... since "1" is marked for removing, then we want to see
-    is_chng0 = (any_zero and (mask_i==1)) ? is_simple1 : false;
-    is_chng1 = (any_one  and (mask_i==0)) ? true : false; // as long as there is a connection
-    is_chng = is_chng0 or is_chng1 or is_isolated;
-  }else{
-    is_simple0 = simple_point_lut[check0];
-    is_chng0 = any_zero ? (is_simple0 or (check0==255)) : true;
-    is_chng1 = any_one  ? (is_simple1 or (check1==255)) : true;
-    is_chng  = (is_chng0 and is_chng1) or is_isolated;
-  }
-
-  ischng[q_index] = is_chng;
-
-}
-
-torch::Tensor check_is_changeable(torch::Tensor mask, torch::Tensor query,
-                                  bool oob, bool ensure_bndy) {
-
-    // -- check inputs --
-    CHECK_INPUT(mask);
-    CHECK_INPUT(query);
-    int H = mask.size(0);
-    int W = mask.size(1);
-    int Q = query.size(0);
-    int _two = query.size(1);
-    assert(_two == 2);
-
-    // -- check if updating each query point is valid --
-    int nthreads = 512;
-    int nblocks = (Q - 1)/nthreads + 1;
-    auto opt = torch::dtype(torch::kBool).device(mask.device());
-    auto ischng = torch::zeros({Q},opt);
-    check_is_changeable_k<<<nblocks, nthreads>>>(ischng.data_ptr<bool>(),mask.data_ptr<int>(),
-                                                 query.data_ptr<int>(), Q, H, W,
-                                                 oob, ensure_bndy);
-    return ischng;
-
-}
-
-
-
-
-/*********************************************************************************
-
-
-        Compute the ratio of the log Potts Term
-
-
-**********************************************************************************/
-
-
-static __global__
-void log_potts_ratio_k(int* lpotts, const int* mask, const int* query,
-                       int Q, int H, int W){
-
-  // -- get index --
-  int index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (index >= Q) return;
-
-  // -- unpack position --
-  int h_i = query[2*index+0];
-  int w_i = query[2*index+1];
-  
-  // -- reading all neighboring mask values --
-  int summ = 0;
-  for(int dh=-1; dh<=1; dh++){
-    for(int dw=-1; dw<=1; dw++){
-
-      if ((dh==0)&&(dw==0)){ continue; }
-      int h_prop = h_i + dh;
-      int w_prop = w_i + dw;
-
-      bool invalid_h = (h_prop < 0) or (h_prop>=H);
-      bool invalid_w = (w_prop < 0) or (w_prop>=W);
-      bool invalid = invalid_h or invalid_w;
-
-      if (not invalid){
-        summ += 1 - 2*mask[h_prop*W + w_prop];
-      }
-
-    }
-  }
-
-  lpotts[index] = summ; // compute \sum_{j in 8-pt neighs of i} 1-2*s_j
-}
-
-
-
-torch::Tensor
-log_potts_ratio(torch::Tensor mask, torch::Tensor query) {
-
-    // -- check inputs --
-    CHECK_INPUT(mask);
-    CHECK_INPUT(query);
-    int H = mask.size(0); 
-    int W = mask.size(1);
-    int Q = query.size(0);
-    int _two = query.size(1);
-    assert(_two == 2);
-
-    // -- count edges per boundary point --
-    int nthreads = 512;
-    int nblocks = (Q - 1)/nthreads + 1;
-    auto opt = torch::dtype(torch::kInt32).device(mask.device());
-    auto lpotts = torch::zeros({Q,},opt);
-    log_potts_ratio_k<<<nblocks, nthreads>>>(lpotts.data_ptr<int>(),
-                                             mask.data_ptr<int>(),
-                                             query.data_ptr<int>(),
-                                             Q, H, W);
-    return lpotts;
-}
-
-
-
-
-/*********************************************************************************
-
-
-      Compute a bool map indicating where Strands are in the binary mask
-
-
-**********************************************************************************/
-
-
 __device__ inline bool is_strand(bool* nbrs) {
     // Opposite neighbor pairs (8-connected, center excluded):
     // Layout:  0 1 2
@@ -416,6 +195,229 @@ __device__ inline bool is_strand(bool* nbrs) {
     return (is_strand_b && (count <= 2));
 
 }
+
+__device__ const bool simple_point_lut[256] = {
+           0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0,
+	       1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1,
+	       0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0,
+	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	       0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0,
+	       0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0,
+	       0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0,
+	       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
+	       0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 1, 0,
+	       0, 0, 1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0};
+
+__device__ inline int ischangeable_by_nbrs(bool* nbrs){
+  int num = 0;
+  int count_diff = 0;
+#pragma unroll
+   for (int i=7; i>=0; i--)
+   {
+      num <<= 1;
+      if (nbrs[i]) num++;
+      else count_diff++;
+   }
+   return num;//simple_point_lut[num];
+}
+
+__device__ inline
+void set_mask(int NW,int N,int NE,int W,
+              int E,int SW,int S,int SE,
+              int label, bool oob, bool* nbrs){
+  nbrs[0] = (label == NW) || ((NW==-1) and oob);
+  nbrs[1] = (label == N)  || ((N ==-1) and oob);
+  nbrs[2] = (label == NE) || ((NE==-1) and oob);
+  nbrs[3] = (label == W)  || ((W ==-1) and oob);
+  nbrs[4] = (label == E)  || ((E ==-1) and oob);
+  nbrs[5] = (label == SW) || ((SW==-1) and oob);
+  nbrs[6] = (label == S)  || ((S ==-1) and oob);
+  nbrs[7] = (label == SE) || ((SE==-1) and oob);
+  return;
+
+}
+
+static __global__
+void check_is_changeable_k(bool* ischng, const int* mask, const int* query,
+                           int Q, int H, int W,
+                           bool oob, bool ensure_bndy, bool update_bkg){
+
+  // -- get index --
+  int q_index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (q_index >= Q) return;
+
+  // -- unpack position --
+  int h_i = query[2*q_index+0];
+  int w_i = query[2*q_index+1];
+  int mask_i = mask[h_i*W + w_i];
+  int neighs[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
+  bool vec[8];
+
+  // -- reading all neighboring mask values --
+  int ix = 0;
+  for(int dh=-1; dh<=1; dh++){
+    for(int dw=-1; dw<=1; dw++){
+      if ((dh==0)&&(dw==0)){ continue; }
+      int h_prop = h_i + dh;
+      int w_prop = w_i + dw;
+      bool invalid_h = (h_prop < 0) or (h_prop>=H);
+      bool invalid_w = (w_prop < 0) or (w_prop>=W);
+      bool invalid = invalid_h or invalid_w;
+      if (invalid){
+        neighs[ix] = -1;
+      }else{
+        neighs[ix] = mask[h_prop*W + w_prop];
+      }
+      ix++;
+    }
+  }
+
+  // -- check 0 and 1 --
+  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4],
+           neighs[5], neighs[6], neighs[7], 0, oob, vec);
+  int check0 = ischangeable_by_nbrs(vec);
+  set_mask(neighs[0], neighs[1], neighs[2], neighs[3], neighs[4],
+           neighs[5], neighs[6], neighs[7], 1, oob, vec);
+  int check1 = ischangeable_by_nbrs(vec);
+  bool is_isolated = ((check0 == 255) and (mask_i == 1)) or ((check1 == 255) and (mask_i==0));
+
+  // -- only if a face takes the value can we update to it --
+  bool any_zero = (neighs[1]==0) or (neighs[3] == 0) or (neighs[4] == 0) or (neighs[6] == 0);
+  bool any_one  = (neighs[1]==1) or (neighs[3] == 1) or (neighs[4] == 1) or (neighs[6] == 1);
+
+  // -- assign --
+  bool is_simple0;
+  bool is_simple1 = simple_point_lut[check1];  // we don't care about preserving topology of bkgnd
+  bool is_chng0;
+  bool is_chng1;
+  bool is_chng;
+  if (ensure_bndy){
+    // ? why not is_simple0?... since "1" is marked for removing, then we want to see
+    is_chng0 = (any_zero and (mask_i==1)) ? is_simple1 : false;
+    is_chng1 = (any_one  and (mask_i==0)) ? true : false; // as long as there is a connection
+    is_chng = is_chng0 or is_chng1 or is_isolated;
+  }else{
+    is_simple0 = simple_point_lut[check0];
+    is_chng0 = is_simple0 or (check0==255);
+    is_chng1 = is_simple1 or (check1==255);
+    // is_chng  = (is_chng0 and is_chng1) or is_isolated or is_strand(vec);
+    is_chng  = (is_chng0 and is_chng1) or is_strand(vec);
+  }
+
+  ischng[q_index] = is_chng or ((mask_i==0) and update_bkg);
+
+}
+
+torch::Tensor check_is_changeable(torch::Tensor mask, torch::Tensor query,
+                                  bool oob, bool ensure_bndy, bool update_bkg) {
+
+    // -- check inputs --
+    CHECK_INPUT(mask);
+    CHECK_INPUT(query);
+    int H = mask.size(0);
+    int W = mask.size(1);
+    int Q = query.size(0);
+    int _two = query.size(1);
+    assert(_two == 2);
+
+    // -- check if updating each query point is valid --
+    int nthreads = 512;
+    int nblocks = (Q - 1)/nthreads + 1;
+    auto opt = torch::dtype(torch::kBool).device(mask.device());
+    auto ischng = torch::zeros({Q},opt);
+    check_is_changeable_k<<<nblocks, nthreads>>>(ischng.data_ptr<bool>(),mask.data_ptr<int>(),
+                                                 query.data_ptr<int>(), Q, H, W,
+                                                 oob, ensure_bndy, update_bkg);
+    return ischng;
+
+}
+
+
+
+
+/*********************************************************************************
+
+
+        Compute the ratio of the log Potts Term
+
+
+**********************************************************************************/
+
+
+static __global__
+void log_potts_ratio_k(int* lpotts, const int* mask, const int* query,
+                       int Q, int H, int W){
+
+  // -- get index --
+  int index = blockIdx.x * blockDim.x + threadIdx.x;
+  if (index >= Q) return;
+
+  // -- unpack position --
+  int h_i = query[2*index+0];
+  int w_i = query[2*index+1];
+  
+  // -- reading all neighboring mask values --
+  int summ = 0;
+  for(int dh=-1; dh<=1; dh++){
+    for(int dw=-1; dw<=1; dw++){
+
+      if ((dh==0)&&(dw==0)){ continue; }
+      int h_prop = h_i + dh;
+      int w_prop = w_i + dw;
+
+      bool invalid_h = (h_prop < 0) or (h_prop>=H);
+      bool invalid_w = (w_prop < 0) or (w_prop>=W);
+      bool invalid = invalid_h or invalid_w;
+
+      if (not invalid){
+        summ += 1 - 2*mask[h_prop*W + w_prop];
+      }
+
+    }
+  }
+
+  lpotts[index] = summ; // compute \sum_{j in 8-pt neighs of i} 1-2*s_j
+}
+
+
+
+torch::Tensor
+log_potts_ratio(torch::Tensor mask, torch::Tensor query) {
+
+    // -- check inputs --
+    CHECK_INPUT(mask);
+    CHECK_INPUT(query);
+    int H = mask.size(0); 
+    int W = mask.size(1);
+    int Q = query.size(0);
+    int _two = query.size(1);
+    assert(_two == 2);
+
+    // -- count edges per boundary point --
+    int nthreads = 512;
+    int nblocks = (Q - 1)/nthreads + 1;
+    auto opt = torch::dtype(torch::kInt32).device(mask.device());
+    auto lpotts = torch::zeros({Q,},opt);
+    log_potts_ratio_k<<<nblocks, nthreads>>>(lpotts.data_ptr<int>(),
+                                             mask.data_ptr<int>(),
+                                             query.data_ptr<int>(),
+                                             Q, H, W);
+    return lpotts;
+}
+
+
+
+
+/*********************************************************************************
+
+
+      Compute a bool map indicating where Strands are in the binary mask
+
+
+**********************************************************************************/
+
 
 
 static __global__
@@ -584,7 +586,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("get_boundary",&get_boundary,"Bool map of the boundary pixels.",
         py::arg("mask"), py::arg("K")=1, py::arg("no_corners")=true);
   m.def("check_is_changeable",&check_is_changeable,"Check which query points can be updated.",
-        py::arg("mask"),py::arg("query"),py::arg("oob")=true,py::arg("ensure_bndy")=false);
+        py::arg("mask"),py::arg("query"),py::arg("oob")=true,
+        py::arg("ensure_bndy")=false,py::arg("update_bkg")=false);
   m.def("log_potts_ratio",&log_potts_ratio,"Compute the ratio of a log Potts term");
   m.def("find_strands",&find_strands,"Find strands in a binary mask.");
   m.def("find_islands",&find_islands,"Find islands in a binary mask.");
