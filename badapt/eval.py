@@ -28,11 +28,8 @@ def eval_refiner(rname,dname,potts,steps,scales):
     device = 'cuda:0'
     refiner = None
     if rname == "bsam":
-        # refiner = BSAM("checkpoints/bsam.pt").to(device)
         refiner = BSAM("checkpoints/bsam_50k.pt").to(device)
         refiner.sam['sam'].to(device)
-        # refiner.sam['sam'].image_encoder.to(device)
-        # refiner.sam['sam'].mask_decoder.to(device)
     else:
         hq_mode = 'hq' in rname
         refiner = sam_model_registry["<model_type>"](checkpoint="<path/to/checkpoint>")
@@ -52,11 +49,11 @@ def eval_refiner(rname,dname,potts,steps,scales):
     coarse_fname = f"data/sam_masks/{dname}.json"
     dts = json.load(open(coarse_fname))
     dts_by_img_id = defaultdict(list)
-    for dt in dts: dts_by_img_id[int(dt['image_id'])].append(dt)
+    for dt in dts:
+        dts_by_img_id[int(dt['image_id'])].append(dt)
+        # if dt['image_id'] <= 50:
 
     # -- loop over masks --
-    img_mean = th.tensor([0.485, 0.456, 0.406]).to(device)
-    img_std  = th.tensor([0.229, 0.224, 0.225]).to(device)
     record = defaultdict(list)
     for img_id,dets in dts_by_img_id.items():
 
@@ -112,9 +109,9 @@ def eval_refiner(rname,dname,potts,steps,scales):
         #     tv_utils.save_image(grid,"mask_%d.png"%img_id)
 
         # -=-=-=- summary -=-=-=-=-
-        print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f] CC: [%d,%d,%d]" % (img_id,miou_coarse,miou_refined,
-                                                                                 biou_coarse,biou_refined,
-                                                                                 cc_gt,cc_coarse,cc_refined))
+        pargs = (img_id,miou_coarse,miou_refined,biou_coarse,biou_refined,
+                cc_gt,cc_coarse,cc_refined)
+        print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f] CC: [%d,%d,%d]" % pargs)
 
         # -- record --
         record['mIoU-C'].append(miou_coarse)

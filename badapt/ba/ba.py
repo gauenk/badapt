@@ -91,7 +91,7 @@ def boundary_adaptation(bsam,image,coarse,potts_coeff=0.0,steps=None,scales=None
             # manually remove strands and islands
             # remove_artifacts(refined)
             # if scale == 1:
-            #     if (step % 4 == 0) or (step==nsteps-1): remove_artifacts(refined)
+            #     if (step % 5 == 0) or (step==nsteps-1): remove_artifacts(refined)
 
     # ensure native-resolution
     refined = interp(refined,H,W,'nearest')
@@ -117,8 +117,10 @@ def ba_step(logits, mask, bndy, potts_coeff):
         # print(i,len(query_i))
 
         # -- select only changable --
-        is_chng = check_is_changeable(mask, query_i, True, False, True)
-        # is_chng = th.ones_like(is_chng) # dev only
+        # is_chng = check_is_changeable(mask, query_i, False, True, False)
+        is_chng = check_is_changeable(mask, query_i, True, True, False)
+        # is_chng = check_is_changeable(mask, query_i, True, False, True)
+        # is_chng = th.ones(query_i.shape[0],dtype=th.bool,device=query_i.device) # dev only
         query_i = query_i[is_chng]
         logits_i = logits[sel_i][is_chng]
 

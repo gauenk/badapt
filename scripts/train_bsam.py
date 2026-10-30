@@ -68,7 +68,7 @@ def main():
     cfg.steps = [3,3,3]
     cfg.local_rank = 0
     cfg.lr = 1e-4
-    cfg.niters_train = 50_000
+    cfg.niters_train = 100_000
     cfg.log_every = 50
     cfg.val_every = 500
     cfg.ckpt_every = 5000

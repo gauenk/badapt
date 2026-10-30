@@ -70,6 +70,12 @@ def get_paths_by_name(name,dset):
             mask_dir = "data/ThinObjects5K/masks_test"
     elif name == "hrsod":
         pass
+    elif name == "objmix":
+        if dset == "tr":
+            raise KeyError("Uknown training dataset objmix. Did you mean val/te?")
+        else:
+            img_dir = "data/ObjMix/im/"
+            mask_dir ="data/ObjMix/gt/"
     else:
         raise KeyError(f"Uknown dataset name [{name}]")
     return img_dir,mask_dir
