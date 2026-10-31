@@ -135,8 +135,8 @@ class MaskDecoderHQ(nn.Module):
         return_upscaled_hq: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        # assert(image_embeddings.ndim == 4)
-        # assert(interm_embeddings.ndim == 4)
+        assert(image_embeddings.ndim == 4)
+        assert(interm_embeddings.ndim == 4)
 
         hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(interm_embeddings)
         up_ftrs, hyper_in = self.predict_masks(
@@ -177,8 +177,8 @@ class MaskDecoderHQ(nn.Module):
           torch.Tensor: batched predictions of mask quality
         """
 
-        # assert(image_embeddings.ndim == 4)
-        # assert(interm_embeddings.ndim == 4)
+        assert(image_embeddings.ndim == 4)
+        assert(interm_embeddings.ndim == 4)
 
         hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(interm_embeddings)
  
