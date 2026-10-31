@@ -68,9 +68,9 @@ def main():
     cfg.steps = [3,3,3]
     cfg.local_rank = 0
     cfg.lr = 1e-4
-    cfg.niters_train = 100_000
-    cfg.log_every = 50
-    cfg.val_every = 500
+    cfg.niters_train = 50_000
+    cfg.log_every = 100
+    cfg.val_every = 1000
     cfg.ckpt_every = 5000
     cfg.global_step = 0
     cfg.save_root = "training_checkpoints"
@@ -89,7 +89,7 @@ def main():
 
     optim = th.optim.AdamW(bsam.parameters(),lr=cfg.lr)
     tr_data  = get_dataset(cfg.dname,'tr',use_dist=False,nsamples=0)
-    val_data = get_dataset(cfg.dname,'val',use_dist=False,nsamples=10)
+    val_data = get_dataset(cfg.dname,'val',use_dist=False,nsamples=3)
     launch_training(cfg,bsam,optim,tr_data,val_data)
 
 if __name__ == "__main__":

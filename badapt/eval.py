@@ -29,6 +29,7 @@ def eval_refiner(rname,dname,potts,steps,scales):
     refiner = None
     if rname == "bsam":
         refiner = BSAM("checkpoints/bsam_50k.pt").to(device)
+        # refiner = BSAM("training_checkpoints/checkpoint_frhq_50000.pt").to(device)
         refiner.sam['sam'].to(device)
     else:
         hq_mode = 'hq' in rname
@@ -50,8 +51,10 @@ def eval_refiner(rname,dname,potts,steps,scales):
     dts = json.load(open(coarse_fname))
     dts_by_img_id = defaultdict(list)
     for dt in dts:
-        dts_by_img_id[int(dt['image_id'])].append(dt)
+        # dts_by_img_id[int(dt['image_id'])].append(dt)
         # if dt['image_id'] <= 50:
+        if dt['image_id'] <= 10:
+            dts_by_img_id[int(dt['image_id'])].append(dt)
 
     # -- loop over masks --
     record = defaultdict(list)

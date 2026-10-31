@@ -37,7 +37,7 @@ def get_dataset(names,dset,use_dist=False,nsamples=0,nworkers=2):
 
     # -- code switch --
     if names == "frhq":
-        names = ["thinobjects",]#"big","dis5k","hrsod","uhrsd",]
+        names = ["thinobjects","big","dis5k","hrsod","uhrsd",]
     if isinstance(names,str): names = [names,]
 
     # -- get datasets --
@@ -68,8 +68,34 @@ def get_paths_by_name(name,dset):
         else:
             img_dir = "data/ThinObjects5K/images_test"
             mask_dir = "data/ThinObjects5K/masks_test"
+    elif name == "big":
+        if dset == "tr":
+            img_dir = "data/BIG/val/images/"
+            mask_dir = "data/BIG/val/masks"
+        else:
+            img_dir = "data/BIG/test/images/"
+            mask_dir = "data/BIG/test/masks"
+    elif name == "dis5k":
+        if dset == "tr":
+            img_dir = "data/DIS5K/DIS-TR/im/"
+            mask_dir = "data/DIS5K/DIS-TR/gt/"
+        else:
+            img_dir = "data/DIS5K/DIS-VD/im/"
+            mask_dir = "data/DIS5K/DIS-VD/gt/"
     elif name == "hrsod":
-        pass
+        if dset == "tr":
+            img_dir = "data/HRSOD/HRSOD_train"
+            mask_dir = "data/HRSOD/HRSOD_train_mask"
+        else:
+            img_dir = "data/HRSOD/HRSOD_test"
+            mask_dir = "data/HRSOD/HRSOD_test_mask"
+    elif name == "uhrsd":
+        if dset == "tr":
+            img_dir = "data/UHRSD/UHRSD_TR_2K/image"
+            mask_dir = "data/UHRSD/UHRSD_TR_2K/mask"
+        else:
+            img_dir = "data/UHRSD/UHRSD_TE/image"
+            mask_dir = "data/UHRSD/UHRSD_TE/mask"
     elif name == "objmix":
         if dset == "tr":
             raise KeyError("Uknown training dataset objmix. Did you mean val/te?")
@@ -130,7 +156,6 @@ class SegData(Dataset):
             ],
             key=lambda p: p[0].stem,
         )
-
         self.pairs = pairs[:nsamples] if nsamples > 0 else pairs
         self.img_dir = img_dir
         self.mask_dir = mask_dir

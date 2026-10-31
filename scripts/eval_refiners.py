@@ -70,8 +70,8 @@ def main():
     # rnames = ['bsam','hqsam-refiner','sam-refiner']
     # dnames = ["thinobjects","big","dis5k","hrsod","uhrsd",]
     rnames = ['bsam',]
-    # dnames = ["thinobjects",]
-    dnames = ["objmix",]
+    dnames = ["thinobjects",]
+    # dnames = ["objmix",]
 
     results = []
     for rname in rnames:
