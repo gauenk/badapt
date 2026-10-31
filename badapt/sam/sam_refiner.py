@@ -136,7 +136,7 @@ def refiner_step(sam,prompt,image_enc,early_enc,HW):
     image_pe = sam.prompt_encoder.get_dense_pe()
     if sam.use_samhq: hq_kwargs = {"hq_token_only":True,"interm_embeddings":early_enc}
     else: hq_kwargs = {}
-    masks,ious = sam.mask_decoder(image_enc,image_pe,sparse_embeddings,dense_embeddings,multimask_output=True,**hq_kwargs)
+    masks,ious = sam.mask_decoder(image_enc[0],image_pe,sparse_embeddings,dense_embeddings,multimask_output=True,**hq_kwargs)
 
     # -- post-process masks --
     logits = masks # since not thresholded yet...

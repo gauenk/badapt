@@ -117,10 +117,10 @@ def ba_step(logits, mask, bndy, potts_coeff):
         # print(i,len(query_i))
 
         # -- select only changable --
+        is_chng = check_is_changeable(mask, query_i, True, True, False)
         # is_chng = check_is_changeable(mask, query_i, False, True, False)
-        # is_chng = check_is_changeable(mask, query_i, True, True, False)
         # is_chng = check_is_changeable(mask, query_i, True, False, True)
-        is_chng = th.ones(query_i.shape[0],dtype=th.bool,device=query_i.device) # dev only
+        # is_chng = th.ones(query_i.shape[0],dtype=th.bool,device=query_i.device) # dev only
         query_i = query_i[is_chng]
         logits_i = logits[sel_i][is_chng]
 

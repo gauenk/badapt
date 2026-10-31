@@ -70,8 +70,9 @@ def main():
     # dnames = ["thinobjects","big","dis5k","hrsod","uhrsd",]
     # rnames = ['bsam',]
     # rnames = ['hqsam-refiner','bsam']
-    rnames = ['bsam',]
-    # rnames = ['sam-refiner',]
+    # rnames = ['bsam',]
+    # rnames = ['hqsam-refiner',]
+    rnames = ['sam-refiner',]
     dnames = ["thinobjects",]
     # dnames = ["objmix",]
 
