@@ -8,7 +8,12 @@
 
 import numpy as np
 from pathlib import Path
+
 from PIL import Image, ImageOps
+Image.MAX_IMAGE_PIXELS = None  # remove limit entirely
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 from skimage import io
 from scipy import ndimage
 import random

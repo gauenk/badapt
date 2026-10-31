@@ -135,6 +135,8 @@ class MaskDecoderHQ(nn.Module):
         return_upscaled_hq: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
+        assert(image_embeddings.ndim == 4)
+        assert(interm_embeddings.ndim == 4)
 
         hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(interm_embeddings)
         up_ftrs, hyper_in = self.predict_masks(
@@ -175,7 +177,11 @@ class MaskDecoderHQ(nn.Module):
           torch.Tensor: batched predictions of mask quality
         """
 
+        assert(image_embeddings.ndim == 4)
+        assert(interm_embeddings.ndim == 4)
+
         hq_features = self.embedding_encoder(image_embeddings) + self.compress_vit_feat(interm_embeddings)
+ 
         masks, iou_pred = self.predict_masks(
             image_embeddings=image_embeddings,
             image_pe=image_pe,
@@ -257,23 +263,14 @@ class MaskDecoderHQ(nn.Module):
 
             masks_sam = (hyper_in[:,:self.num_mask_tokens-1] @ upscaled_embedding_sam.view(b, c, h * w)).view(b, -1, h, w)
             masks_sam_hq = (hyper_in[:,self.num_mask_tokens-1:] @ upscaled_embedding_hq.view(b, c, h * w)).view(b, -1, h, w)
-            iou_pred = self.iou_prediction_head(iou_token_out)
-
-            # -- debug --
-            # print(masks_sam.shape,masks_sam.min(),masks_sam.max())
-            # for i in range(4):
-            #     print(i,masks_sam[:,i].min(),masks_sam[:,i].max())
-            # print(masks_sam_hq.shape,masks_sam_hq.min(),masks_sam_hq.max())
-            # print(iou_pred)
-            # exit()
-
             masks = torch.cat([masks_sam,masks_sam_hq],dim=1)
+            iou_pred = self.iou_prediction_head(iou_token_out)
 
             if return_upscaled_hq:
                 hyper_in_hq = hyper_in[:,self.num_mask_tokens-1:]
                 return masks_sam, masks_sam_hq, iou_pred, upscaled_embedding_hq, hyper_in_hq
             else:
-                return masks_sam, masks_sam_hq, iou_pred
+                return masks, iou_pred
         else:
             return upscaled_embedding_hq,hyper_in[:,self.num_mask_tokens-1:]
 

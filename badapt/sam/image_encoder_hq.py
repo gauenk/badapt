@@ -150,10 +150,8 @@ class ImageEncoderViT(nn.Module):
         for blk in self.blocks:
             x = blk(x)
             if (early_enc is None) and (blk.window_size == 0):
-                early_enc = x
-
+                early_enc = x.permute(0,3,1,2) # '1 h w c -> 1 c h w'
         x = self.neck(x.permute(0, 3, 1, 2))
-
         if return_early_ftrs: return x,early_enc
         else: return x
 

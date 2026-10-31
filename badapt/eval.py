@@ -1,28 +1,35 @@
 
 
+# -- standard --
+import json
 import cv2
-
 import numpy as np
 import torch as th
-
-
-from badapt.ba import boundary_adaptation
-from badapt.bsam import BSAM
-
-# from badapt.sam_refiner import run_sam_refiner
-
-from badapt.data import get_eval_dataset
-from segment_anything import sam_model_registry,SamPredictor
-
-import json
 import pycocotools.mask as mask_utils
-
 from pathlib import Path
 from collections import defaultdict
 from scipy.ndimage import label as scipy_label
 
+# -- data --
+from badapt.data import get_eval_dataset
 
-def eval_refiner(rname,dname,potts,steps,scales):
+# -- load up bsam --
+from badapt.bsam import BSAM
+from badapt.ba import boundary_adaptation
+
+# -- load up sam --
+from segment_anything import sam_model_registry
+from badapt.sam.sam_refiner import run_sam_refiner
+from badapt.sam.image_encoder_hq import init_image_encoder
+from badapt.sam.mask_decoder_hq import init_mask_decoder
+
+
+def eval_refiner(rname,dname,potts,steps,scales,run_sam=False):
+
+    print(f"Running [{rname}] on [{dname}]")
+
+    # -- misc setup --
+    th.cuda.empty_cache()
 
     # -- prepare refiner --
     device = 'cuda:0'
@@ -32,16 +39,18 @@ def eval_refiner(rname,dname,potts,steps,scales):
         # refiner = BSAM("training_checkpoints/checkpoint_frhq_50000.pt").to(device)
         refiner.sam['sam'].to(device)
     else:
-        hq_mode = 'hq' in rname
-        refiner = sam_model_registry["<model_type>"](checkpoint="<path/to/checkpoint>")
-        # predictor = SamPredictor(sam)
-        # predictor.set_image(<your_image>)
-        # masks, _, _ = predictor.predict(<input_prompts>)
-        # refiner.mask_decoder = HQMaskDecoder()
+        refiner = sam_model_registry["vit_h"](checkpoint="checkpoints/sam_vit_h_4b8939.pth")
+        refiner.use_samhq = False
+        if rname == "hqsam-refiner":
+            refiner.use_samhq = True
+            refiner.image_encoder = init_image_encoder("checkpoints/hqsam_vit_h.pth")
+            refiner.mask_decoder = init_mask_decoder("checkpoints/hqsam_vit_h.pth")
+        refiner.to(device)
 
     # -- misc [run sam during eval... slower] --
-    # sam = sam_model_registry["vit_h"](checkpoint="checkpoints/sam_vit_h_4b8939.pth")
-    # sam = sam.to(device)
+    if run_sam:
+        sam = sam_model_registry["vit_h"](checkpoint="checkpoints/sam_vit_h_4b8939.pth")
+        sam = sam.to(device)
 
     # -- load dataset --
     data = get_eval_dataset(dname,'val')
@@ -51,10 +60,11 @@ def eval_refiner(rname,dname,potts,steps,scales):
     dts = json.load(open(coarse_fname))
     dts_by_img_id = defaultdict(list)
     for dt in dts:
-        # dts_by_img_id[int(dt['image_id'])].append(dt)
+        dts_by_img_id[int(dt['image_id'])].append(dt)
+        # if dt['image_id'] <= 10:
+        #     dts_by_img_id[int(dt['image_id'])].append(dt)
         # if dt['image_id'] <= 50:
-        if dt['image_id'] <= 10:
-            dts_by_img_id[int(dt['image_id'])].append(dt)
+        #     dts_by_img_id[int(dt['image_id'])].append(dt)
 
     # -- loop over masks --
     record = defaultdict(list)
@@ -74,22 +84,24 @@ def eval_refiner(rname,dname,potts,steps,scales):
         assert(coarse.shape[0] == 1)
         coarse = th.from_numpy(coarse[0]).to(device).to(th.uint8)
 
-        # -- run sam [very optional... just read coarse from file...] --
-        # coarse = run_sam(sam,image,gt)[0][0].to(th.uint8)
-        # miou_coarse = float(compute_iou(coarse, gt))
+        # -=-=- run sam [very optional...] --
+        if run_sam:
+            coarse,logits = run_sam(sam,image,gt)[0]
 
         # -=-=-=- get refined mask -=-=--
         if rname == "bsam":
             refined = boundary_adaptation(refiner,image,coarse,potts,steps,scales)
+        elif rname == "bsam-ent":
+            refined = boundary_adaptation_entropy(refiner,image,coarse,logits)
         else:
-            refined = run_sam_refiner(refiner,rname,image,coarse,steps)
+            refined = run_sam_refiner(refiner,image,coarse)
 
-        # -=-=-=- compute mIoU -=-=-=-
+        # -=-=-=- Compute mIoU -=-=-=-
         miou_coarse = float(compute_iou(coarse, gt))
         miou_refined = float(compute_iou(refined, gt))
         # print(img_id,miou_coarse,miou_refined)
 
-        # -=-=-=- compute bIoU -=-=-=-
+        # -=-=-=- Compute bIoU -=-=-=-
         coarse_b = mask_to_boundary(coarse)
         refined_b = mask_to_boundary(refined)
         gt_b = mask_to_boundary(gt)
@@ -97,11 +109,11 @@ def eval_refiner(rname,dname,potts,steps,scales):
         biou_refined = float(compute_iou(refined_b, gt_b))
 
         # -=-=-=-=- Connected Comps -=-=-=-=-
-        cc_gt = ndi_label(gt.cpu())[1]
-        cc_coarse = ndi_label(coarse.cpu())[1]
-        cc_refined = ndi_label(refined.cpu())[1]
+        cc_gt = get_connected_comps(gt.cpu())[1]
+        cc_coarse = get_connected_comps(coarse.cpu())[1]
+        cc_refined = get_connected_comps(refined.cpu())[1]
 
-        # -- viz example --
+        # -=-=-=- Viz Example -=-=-=-=-
         # if cc_refined > cc_coarse:
         #     print("Saving examples for image ",img_id)
         #     import torchvision.utils as tv_utils
@@ -111,12 +123,12 @@ def eval_refiner(rname,dname,potts,steps,scales):
         #     print(grid.shape)
         #     tv_utils.save_image(grid,"mask_%d.png"%img_id)
 
-        # -=-=-=- summary -=-=-=-=-
+        # -=-=-=- Summary -=-=-=-=-
         pargs = (img_id,miou_coarse,miou_refined,biou_coarse,biou_refined,
                 cc_gt,cc_coarse,cc_refined)
         print("[%03d] mIoU: [%2.3f,%2.3f] bIoU: [%2.3f,%2.3f] CC: [%d,%d,%d]" % pargs)
 
-        # -- record --
+        # -=-=-=-=- Record -=-=-=-=-
         record['mIoU-C'].append(miou_coarse)
         record['mIoU-R'].append(miou_refined)
         record['bIoU-C'].append(biou_coarse)
@@ -128,7 +140,6 @@ def eval_refiner(rname,dname,potts,steps,scales):
         record['img_id'].append(img_id)
 
     return record
-
 
 def compute_iou(pred, anno):
     """Compute IoU for each class"""
@@ -157,7 +168,7 @@ def compute_iou(pred, anno):
 
     return iou
 
-def ndi_label(mask):
+def get_connected_comps(mask):
     s = np.array([[0,1,0],[1,1,1],[0,1,0]])
     labeled_array, num_features = scipy_label(mask, structure=s)
     return labeled_array, num_features
@@ -204,56 +215,5 @@ def read_annos(annos):
     masks = np.stack(masks)
     classes = np.stack(classes)
     return masks,classes
-
-
-# def mask_to_bbox(masks):
-#     """Compute tight bounding box [x1, y1, x2, y2] from a binary mask tensor."""
-#     if len(masks.shape) == 2: # missing batch dim
-#         masks = masks[None,:]
-#     boxes = []
-#     for mask in masks:
-#         mask_np = mask.squeeze().cpu().numpy().astype(bool)
-#         rows = np.any(mask_np, axis=1)
-#         cols = np.any(mask_np, axis=0)
-#         if not rows.any():
-#             return None
-#         y1, y2 = np.where(rows)[0][[0, -1]]
-#         x1, x2 = np.where(cols)[0][[0, -1]]
-#         box = np.array([x1, y1, x2, y2])
-#         boxes.append(box)
-#     return boxes
-
-# def run_sam(sam,image,mask):
-
-#     # -- prepare --
-#     predictor = SamPredictor(sam)
-#     if len(image.shape) == 4:
-#         assert(image.shape[0] == 1)
-#         image = image[0]
-#     assert(len(image.shape) == 3)
-#     if th.is_tensor(image):
-#         image = image.cpu().numpy()
-#     if image.shape[2] != 3:
-#         image = np.transpose(image,(1,2,0))
-#     image = image.astype("uint8")
-
-#     # -- run sam --
-#     box = mask_to_bbox(mask)[0]
-#     predictor.set_image(image)
-#     masks_np, scores, logits = predictor.predict(
-#         box=box,multimask_output=True,return_logits=True)
-
-#     # -- keep only the highest-scoring mask --
-#     # print(scores)
-#     best_idx = int(np.argmax(scores))
-#     best_mask = masks_np[best_idx]
-#     best_score = float(scores[best_idx])
-
-#     # -- thresh and return --
-#     device = sam.device
-#     logits = th.from_numpy(best_mask).to(th.float).to(device)
-#     coarse = (logits > predictor.model.mask_threshold).int()
-
-#     return coarse[None,:],logits[None,:]
 
 

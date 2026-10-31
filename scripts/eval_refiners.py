@@ -58,7 +58,6 @@ def write_cache(res,root,rname,dname):
 #     print(th.sum(i0 != i1),i0.sum(),i1.sum())
 #     exit()
 
-
 def main():
 
 
@@ -69,7 +68,10 @@ def main():
     cache_root = Path(".")
     # rnames = ['bsam','hqsam-refiner','sam-refiner']
     # dnames = ["thinobjects","big","dis5k","hrsod","uhrsd",]
+    # rnames = ['bsam',]
+    # rnames = ['hqsam-refiner','bsam']
     rnames = ['bsam',]
+    # rnames = ['sam-refiner',]
     dnames = ["thinobjects",]
     # dnames = ["objmix",]
 
@@ -79,17 +81,16 @@ def main():
 
             res = read_cache(cache_root,rname,dname)
             if res is None or rerun:
-                if rname == 'bsam':
-                    # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
-                    # res = eval_refiner(rname,dname,0.00,[12,9,3],[4,2,1])
-                    # res = eval_refiner(rname,dname,0.00,[3,6,12],[4,2,1])
-                    # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
-                    res = eval_refiner(rname,dname,0.00,[5,],[1,])
-                elif rname in ['hqsam-refiner','sam-refiner']:
-                    res = eval_refiner(rname,dname)
+                # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
+                res = eval_refiner(rname,dname,0.00,[12,9,3],[4,2,1])
+                # res = eval_refiner(rname,dname,0.00,[3,6,12],[4,2,1])
+                # res = eval_refiner(rname,dname,0.00,[12+9+3,],[1,])
+                # res = eval_refiner(rname,dname,0.00,[5,],[1,])
                 res = pd.DataFrame(res)
                 write_cache(res,cache_root,rname,dname)
 
+            res['rname'] = rname
+            res['dname'] = dname
             results.append(res)
 
     results = pd.concat(results)
@@ -98,16 +99,18 @@ def main():
     results = results[results['mIoU-C']>=10]
 
     print(results[['mIoU-R','bIoU-R']])
-
-    stderr = results['mIoU-C'].std()/math.sqrt(len(results))
-    print("mIoU-C: %2.3f %2.5f" % (results['mIoU-C'].mean(),stderr))
-    stderr = results['mIoU-R'].std()/math.sqrt(len(results))
-    print("mIoU-R: %2.3f %2.5f" % (results['mIoU-R'].mean(),stderr))
-
-    stderr = results['bIoU-C'].std()/math.sqrt(len(results))
-    print("bIoU-C: %2.3f %2.5f" % (results['bIoU-C'].mean(),stderr))
-    stderr = results['bIoU-R'].std()/math.sqrt(len(results))
-    print("bIoU-R: %2.3f %2.5f" % (results['bIoU-R'].mean(),stderr))
+    for group,gdf in results.groupby(["rname","dname"]):
+        rname,dname = group
+        print(f"Summary [{rname}] on [{dname}]")
+        stderr = gdf['mIoU-C'].std()/math.sqrt(len(gdf))
+        print("mIoU-C: %2.3f %2.5f" % (gdf['mIoU-C'].mean(),stderr))
+        stderr = gdf['mIoU-R'].std()/math.sqrt(len(gdf))
+        print("mIoU-R: %2.3f %2.5f" % (gdf['mIoU-R'].mean(),stderr))
+    
+        stderr = gdf['bIoU-C'].std()/math.sqrt(len(gdf))
+        print("bIoU-C: %2.3f %2.5f" % (gdf['bIoU-C'].mean(),stderr))
+        stderr = gdf['bIoU-R'].std()/math.sqrt(len(gdf))
+        print("bIoU-R: %2.3f %2.5f" % (gdf['bIoU-R'].mean(),stderr))
 
 if __name__ == "__main__":
     main()

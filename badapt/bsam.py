@@ -16,7 +16,7 @@ from segment_anything.modeling.common import LayerNorm2d
 
 # -- load-up sam --
 from segment_anything import sam_model_registry
-from badapt.sam.image_encoder import init_image_encoder
+from badapt.sam.image_encoder_hq import init_image_encoder
 from badapt.sam.mask_decoder_hq import init_mask_decoder
 
 # -- extract sam features --
@@ -355,12 +355,11 @@ def get_sam_ftrs(sam,image,mask):
     # -- run image encoder [slloow] --
     input_image = sam.preprocess(image)[None,:]
     enc,iftrs_raw = sam.image_encoder(input_image,return_early_ftrs=True)
-    enc = enc.detach()
-    iftrs_raw = iftrs_raw.detach()
-    iftrs_raw = rearrange(iftrs_raw,'1 h w c -> 1 c h w')
+    enc,iftrs_raw = enc.detach(),iftrs_raw.detach()
 
     # -- get prompts --
-    image_record = sam_input_prepare(image, mask[None,:].to(th.uint8), enc[0], resize, gamma=4.0, strength=30)[0]
+    # print("enc.shape: ",enc.shape)
+    image_record = sam_input_prepare(image, mask[None,:].to(th.uint8), enc, resize, gamma=4.0, strength=30)[0]
 
     # -- run mask decoder --
     points = None
@@ -375,7 +374,7 @@ def get_sam_ftrs(sam,image,mask):
     # -- run mask decoder --
     image_pe = sam.prompt_encoder.get_dense_pe()
     fwd = sam.mask_decoder.forward_alt
-    sftrs,context = fwd(enc[0],image_pe,sparse_embeddings,dense_embeddings,
+    sftrs,context = fwd(enc,image_pe,sparse_embeddings,dense_embeddings,
                         multimask_output=False,hq_token_only=True,
                         interm_embeddings=iftrs_raw,return_upscaled_hq=True)
 

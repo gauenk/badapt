@@ -10,10 +10,10 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import distance_transform_edt
 import FastGeodis
 
-def prepare_image(image, transform, device):
-    image = transform.apply_image(image)
-    image = torch.as_tensor(image, device=device)
-    return image.permute(2, 0, 1).contiguous()
+# def prepare_image(image, transform, device):
+#     image = transform.apply_image(image)
+#     image = torch.as_tensor(image, device=device)
+#     return image.permute(2, 0, 1).contiguous()
 
 def gaussian_2d(shape, gamma_x=1, gamma_y=1):
     m, n = [(ss - 1.) / 2. for ss in shape]
@@ -100,6 +100,7 @@ def extract_bboxes_expand(image_embeddings, mask, margin=0, img_path=None):
             query_embed, mask_resize = get_mask_embed(m, image_embeddings)
             query_embed = query_embed / query_embed.norm(dim=-1, keepdim=True)
             sim = image_embeddings_resize @ query_embed.transpose(0, 1)
+            print("sim: ",sim.shape)
             sim = sim.squeeze()
             sim = sim > 0.5
             assert len(sim.shape) == 2, (sim.shape, m.shape, x1, x2, y1, y2, image_embeddings_resize.shape, ori_h, ori_w, query_embed.shape, img_path, mask.shape)
@@ -298,3 +299,4 @@ def extract_mask(pred_masks, gaus_dt, target_size, is01, strength=15, device=0, 
         pred_masks = pred_masks * gaus_dt
 
     return pred_masks
+
